@@ -1,0 +1,39 @@
+venv/
+*.pyc
+__pycache__/
+*.db
+*.db-shm
+*.db-wal
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+coverage.xml
+coverage.json
+htmlcov/
+# .env is tracked with safe dev defaults - change POSTGRES_PASSWORD in production
+*.log
+setup_report_*.txt
+simulation_output*.txt
+test_results.txt
+debug_messages.py
+test_validator_serialization.py
+
+# Runtime data directories
+chroma_data/
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.env.backup
+bin/
+node_modules

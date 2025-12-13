@@ -1,0 +1,57 @@
+# Pre-commit hooks for local development
+# 
+# Installation:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually:
+#   pre-commit run --all-files
+#
+# Skip hooks:
+#   git commit --no-verify
+#
+# NOTE: These hooks run LOCALLY only. They do NOT run in GitHub Actions.
+# GitHub Actions requires credits - we keep CI minimal (test-ci target).
+
+repos:
+  # Fast local tests (< 10 seconds)
+  - repo: local
+    hooks:
+      - id: test-core-engine
+        name: Test Core Engine (109 tests, < 1s)
+        entry: make test-core
+        language: system
+        pass_filenames: false
+        # Only run if core engine files changed
+        files: ^jeeves_core_engine/
+        
+      - id: test-avionics-lightweight
+        name: Test Avionics (lightweight, < 2s)
+        entry: bash -c 'pytest jeeves_avionics/tests/unit/llm -m "not heavy and not requires_ml and not requires_docker" -v'
+        language: system
+        pass_filenames: false
+        # Only run if avionics files changed
+        files: ^jeeves_avionics/
+        
+      - id: test-app-layer
+        name: Test App Layer (all mocked, < 3s)
+        entry: bash -c 'pytest jeeves-capability-code-analyser/tests -v'
+        language: system
+        pass_filenames: false
+        # Only run if app files changed
+        files: ^jeeves-capability-code-analyser/
+
+  # Optional: Linting (commented out - uncomment if needed)
+  # - repo: https://github.com/psf/black
+  #   rev: 23.12.1
+  #   hooks:
+  #     - id: black
+  #       language_version: python3.11
+
+  # - repo: https://github.com/pycqa/isort
+  #   rev: 5.13.2
+  #   hooks:
+  #     - id: isort
+
+# Optionally skip all hooks for specific commits:
+# git commit --no-verify -m "WIP: skip hooks"
