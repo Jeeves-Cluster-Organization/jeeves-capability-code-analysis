@@ -1,0 +1,408 @@
+# Docker Compose configuration for 7-Agent Assistant
+#
+# Cross-platform: Works on Linux, Windows (Docker Desktop + WSL2), and macOS.
+# GPU auto-detection: Falls back to CPU if NVIDIA GPU unavailable.
+#
+# Profiles:
+#   prod:    Production services (api, gateway, postgres, llama-server)
+#   test:    All services including test runner
+#   dev:     All services (same as no profile)
+#   minimal: Core services only (api, postgres, llama-server) - no gateway
+#
+# Usage (from project root):
+#   Build services:         docker compose -f docker/docker-compose.yml build
+#   Start all services:     docker compose -f docker/docker-compose.yml up -d
+#   Start production:       docker compose -f docker/docker-compose.yml --profile prod up -d
+#   Build test image:       docker compose -f docker/docker-compose.yml --profile test build test
+#   Run tests:              docker compose -f docker/docker-compose.yml --profile test run --rm test pytest tests/unit/ -v
+#   Run gateway tests:      docker compose -f docker/docker-compose.yml --profile test run --rm test pytest tests/integration/test_gateway.py -v
+#   Stop services:          docker compose -f docker/docker-compose.yml down
+#   View logs:              docker compose -f docker/docker-compose.yml logs -f
+#
+# Build options:
+#   Build sequentially:     docker compose build --parallel 1  (for low-memory systems)
+#
+# Deployment script (recommended):
+#   python scripts/deployment/deploy.py --profile prod --build
+#   python scripts/deployment/deploy.py --profile test
+#   python scripts/deployment/deploy.py --test-gateway
+#
+# Prerequisites for GPU:
+#   Linux:   nvidia-container-toolkit + Docker configured with nvidia runtime
+#   Windows: NVIDIA driver 535.54+, WSL 2.0.9+, Docker Desktop with WSL2 backend
+#   macOS:   GPU not supported (CPU only)
+#
+# Verify GPU access:
+#   docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+
+services:
+  # ==========================================================================
+  # 7-Agent API Service (gRPC Orchestrator)
+  # ==========================================================================
+  assistant:
+    container_name: assistant-7agent-api
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: orchestrator  # Explicitly use orchestrator stage for gRPC server
+      args:
+        CODE_VERSION: ${CODE_VERSION:-dev}
+    image: assistant-7agent:latest
+
+    # Port mapping (host:container) - gRPC server listens on 50051 inside container
+    ports:
+      - "${API_PORT:-8000}:50051"
+      - "${METRICS_PORT:-9090}:9090"
+
+    # Environment variables (override with .env file)
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ID=${NODE_ID:-node-01}
+      - NODE_NAME=${NODE_NAME:-assistant-primary}
+      # LLM Configuration (llama-server)
+      - LLAMASERVER_HOST=http://llama-server:8080
+      - LLM_PROVIDER=${LLM_PROVIDER:-llamaserver}
+      # Database Configuration (PostgreSQL)
+      - DATABASE_BACKEND=postgres
+      - VECTOR_BACKEND=pgvector
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-assistant}
+      - POSTGRES_USER=${POSTGRES_USER:-assistant}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dev_password_change_in_production}
+      # API Configuration
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_FORMAT=json
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Code Analysis Configuration
+      - REPO_PATH=${REPO_PATH:-/workspace}
+
+    # Volume mounts (data persistence)
+    volumes:
+      - ../data:/app/data
+      - ../.env:/app/.env:ro
+      # Workspace for code analysis (mount your repo here)
+      - ${HOST_REPO_PATH:-..}:/workspace:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check - gRPC server on port 50051
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 50051)); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    # Dependencies
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llama-server:
+        condition: service_healthy
+
+    # Network
+    networks:
+      - assistant-network
+
+    # Labels
+    labels:
+      com.assistant.service: "api"
+      com.assistant.version: "1.0.0"
+
+
+  # ==========================================================================
+  # HTTP Gateway (FastAPI - user-facing web UI)
+  # ==========================================================================
+  gateway:
+    container_name: assistant-gateway
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: gateway
+      args:
+        CODE_VERSION: ${CODE_VERSION:-dev}
+    image: assistant-gateway:latest
+
+    # Port mapping - HTTP gateway on port 8001
+    ports:
+      - "${GATEWAY_PORT:-8001}:8000"
+
+    # Environment variables
+    environment:
+      - ORCHESTRATOR_HOST=assistant
+      - ORCHESTRATOR_PORT=50051
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_FORMAT=json
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check - HTTP endpoint
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # Dependencies - wait for API to be healthy
+    depends_on:
+      assistant:
+        condition: service_healthy
+
+    # Network
+    networks:
+      - assistant-network
+
+    # Labels
+    labels:
+      com.assistant.service: "gateway"
+      com.assistant.version: "1.0.0"
+
+
+  # ==========================================================================
+  # PostgreSQL Database with pgvector Extension
+  # ==========================================================================
+  postgres:
+    container_name: assistant-postgres
+    image: pgvector/pgvector:pg16
+
+    # Port mapping
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    # Environment variables
+    environment:
+      - POSTGRES_DB=${POSTGRES_DATABASE:-assistant}
+      - POSTGRES_USER=${POSTGRES_USER:-assistant}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dev_password_change_in_production}
+      - POSTGRES_INITDB_ARGS=-E UTF8 --locale=en_US.UTF-8
+
+    # Volume mounts
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../jeeves_avionics/database/schemas:/docker-entrypoint-initdb.d:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assistant} -d ${POSTGRES_DATABASE:-assistant}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    # Network
+    networks:
+      - assistant-network
+
+    # Labels
+    labels:
+      com.assistant.service: "database"
+      com.assistant.version: "1.0.0"
+
+
+  # ==========================================================================
+  # llama-server LLM Service (GPU auto-detection, falls back to CPU)
+  # Uses llama.cpp server with OpenAI-compatible API on port 8080
+  # ==========================================================================
+  llama-server:
+    container_name: assistant-llama-server
+    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+
+    # Port mapping
+    ports:
+      - "${LLAMASERVER_PORT:-8080}:8080"
+
+    # Environment
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    # Volume for models (persistent storage)
+    volumes:
+      - llama-models:/models
+
+    # Command: Start llama-server with model
+    # Override LLAMA_MODEL env var to use a different model
+    # Default: Qwen 2.5-3B-Instruct (2GB) - download with scripts/setup/setup-docker-windows.ps1
+    # Alternative: Qwen2.5-7B-Instruct-Q4_K_M.gguf (4.68GB, better quality)
+    # CRITICAL: --ctx-size must be >= 16384 for Qwen2.5-3B.
+    # Agents use num_ctx=16384 (see agents/code_analysis/*.py).
+    #
+    # IMPORTANT: With --parallel N, context is divided: n_ctx_per_slot = ctx_size / N
+    # Default parallel=1 ensures full 16384 context per request (no truncation).
+    # If you need parallelism, increase ctx-size proportionally.
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --model
+      - "/models/${LLAMA_MODEL:-qwen2.5-3b-instruct-q4_k_m.gguf}"
+      - --ctx-size
+      - "${LLAMA_CTX_SIZE:-16384}"
+      - --n-gpu-layers
+      - "${LLAMA_GPU_LAYERS:-35}"
+      - --parallel
+      - "${LLAMA_PARALLEL:-1}"
+
+    # GPU configuration - uses GPU if available, falls back to CPU
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 16G
+        reservations:
+          cpus: '1.0'
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check - llama-server /health endpoint
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+    # Network
+    networks:
+      - assistant-network
+
+    # Labels
+    labels:
+      com.assistant.service: "llm"
+      com.assistant.version: "1.0.0"
+
+
+  # ==========================================================================
+  # Test Runner Service
+  # Usage:
+  #   docker compose --profile test build test
+  #   docker compose run --rm test pytest tests/unit/ -v
+  #   docker compose run --rm test pytest tests/integration/test_gateway.py -v
+  # ==========================================================================
+  test:
+    container_name: assistant-test
+    # Profile: only build/start when explicitly requested (reduces default build time)
+    profiles:
+      - test
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: test
+      args:
+        CODE_VERSION: ${CODE_VERSION:-dev}
+
+    # Environment variables for testing
+    # Per Engineering Plan v4.2: All config explicit in container, no silent defaults
+    environment:
+      # Container detection (required by tests/config/endpoints.py)
+      - CONTAINER=1
+      # Database
+      - DATABASE_BACKEND=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=${POSTGRES_DATABASE:-assistant}
+      - POSTGRES_USER=${POSTGRES_USER:-assistant}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dev_password_change_in_production}
+      # LLM (llama-server)
+      - LLAMASERVER_HOST=http://llama-server:8080
+      - LLM_PROVIDER=llamaserver
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-Llama-3.2-3B-Instruct}
+      # API (required by tests/config/endpoints.py)
+      - API_HOST=http://assistant:8000
+      # Gateway (for integration tests)
+      - GATEWAY_HOST=http://gateway:8000
+      # Logging
+      - LOG_LEVEL=DEBUG
+
+    # Dependencies
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llama-server:
+        condition: service_healthy
+
+    # Network
+    networks:
+      - assistant-network
+
+    # Default test command (can be overridden)
+    command: pytest -v --tb=short
+
+    # Labels
+    labels:
+      com.assistant.service: "test"
+      com.assistant.version: "1.0.0"
+
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  assistant-network:
+    driver: bridge
+    labels:
+      com.assistant.network: "main"
+
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  # llama-server models - EXTERNAL volume created by setup script
+  # This ensures the script and docker-compose use the same volume
+  llama-models:
+    external: true
+
+  # PostgreSQL data (named volume for persistence)
+  postgres-data:
+    driver: local
+    labels:
+      com.assistant.volume: "database"

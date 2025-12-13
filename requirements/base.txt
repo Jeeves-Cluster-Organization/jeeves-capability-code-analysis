@@ -1,0 +1,13 @@
+# ============================================================================
+# Base Requirements - Shared dependencies for all services
+# ============================================================================
+# These packages are used by both gateway and orchestrator
+
+# Core utilities
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.0.0
+structlog==23.2.0
+
+# gRPC (shared communication layer)
+grpcio>=1.60.0
+grpcio-health-checking>=1.60.0  # Standard health check protocol

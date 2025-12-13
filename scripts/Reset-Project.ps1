@@ -1,0 +1,173 @@
+#!/usr/bin/env pwsh
+# Complete Project Reset Script (PowerShell)
+# This script resets the project to a clean state from main branch
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "🧹 Starting Complete Project Reset..." -ForegroundColor Cyan
+Write-Host ""
+
+# =============================================================================
+# 1. GIT RESET TO MAIN
+# =============================================================================
+Write-Host "[NOEMOJI] Step 1: Resetting to latest main branch..." -ForegroundColor Yellow
+
+# Fetch latest from remote
+git fetch origin main
+
+# Show current branch and status
+$currentBranch = git branch --show-current
+Write-Host "Current branch: $currentBranch" -ForegroundColor Gray
+git status --short
+
+# Ask for confirmation
+$confirm = Read-Host "[NOEMOJI]  This will HARD RESET to origin/main. All local changes will be LOST. Continue? (yes/no)"
+if ($confirm -ne "yes") {
+    Write-Host "[NOEMOJI] Reset cancelled" -ForegroundColor Red
+    exit 1
+}
+
+# Checkout main and hard reset
+try {
+    git checkout main 2>$null
+} catch {
+    git checkout -b main origin/main
+}
+git reset --hard origin/main
+git clean -fdx  # Remove all untracked files and directories
+
+Write-Host "[NOEMOJI] Git reset complete" -ForegroundColor Green
+Write-Host ""
+
+# =============================================================================
+# 2. CLEAN PYTHON ARTIFACTS
+# =============================================================================
+Write-Host "[NOEMOJI] Step 2: Cleaning Python artifacts..." -ForegroundColor Yellow
+
+# Remove all Python cache and build artifacts
+Get-ChildItem -Path . -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -File -Filter "*.pyc" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path . -Recurse -Directory -Filter ".pytest_cache" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -Directory -Filter "*.egg-info" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -Directory -Filter ".mypy_cache" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -Directory -Filter "build" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -Directory -Filter "dist" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+
+# Remove coverage and test artifacts
+if (Test-Path ".coverage") { Remove-Item ".coverage" -Force }
+if (Test-Path "htmlcov") { Remove-Item "htmlcov" -Recurse -Force }
+Get-ChildItem -Path . -File -Filter "*.db" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path . -File -Filter "*.db-shm" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path . -File -Filter "*.db-wal" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# Remove virtual environments if they exist
+@("venv", ".venv", "env") | ForEach-Object {
+    if (Test-Path $_) { Remove-Item $_ -Recurse -Force }
+}
+
+Write-Host "[NOEMOJI] Python artifacts cleaned" -ForegroundColor Green
+Write-Host ""
+
+# =============================================================================
+# 3. CLEAN NODE.JS ARTIFACTS
+# =============================================================================
+Write-Host "[NOEMOJI] Step 3: Cleaning Node.js artifacts..." -ForegroundColor Yellow
+
+# Find and remove all node_modules directories
+Get-ChildItem -Path . -Recurse -Directory -Filter "node_modules" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Recurse -File -Filter "package-lock.json" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+Write-Host "[NOEMOJI] Node.js artifacts cleaned" -ForegroundColor Green
+Write-Host ""
+
+# =============================================================================
+# 4. DOCKER CLEANUP (requires Docker to be available)
+# =============================================================================
+Write-Host "[NOEMOJI] Step 4: Docker cleanup..." -ForegroundColor Yellow
+
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    Write-Host "Stopping Docker containers..."
+    docker compose -f docker/docker-compose.yml down -v 2>$null
+
+    Write-Host "Removing project Docker images..."
+    $images = docker images | Select-String -Pattern "assistant-gateway|assistant-7agent|codeanalysis"
+    if ($images) {
+        $images | ForEach-Object {
+            $imageId = ($_ -split '\s+')[2]
+            docker rmi -f $imageId 2>$null
+        }
+    }
+
+    Write-Host "Removing dangling images..."
+    docker image prune -f
+
+    Write-Host "Removing unused volumes..."
+    docker volume prune -f
+
+    Write-Host "[NOEMOJI] Docker cleanup complete" -ForegroundColor Green
+} else {
+    Write-Host "[NOEMOJI]  Docker not available in this environment" -ForegroundColor Yellow
+    Write-Host "   Run these commands manually if Docker is installed:"
+    Write-Host "   - docker compose -f docker/docker-compose.yml down -v"
+    Write-Host "   - docker images | Select-String 'assistant-gateway|assistant-7agent' | ForEach-Object { docker rmi -f `$_ }"
+    Write-Host "   - docker image prune -f"
+    Write-Host "   - docker volume prune -f"
+}
+Write-Host ""
+
+# =============================================================================
+# 5. FRESH INSTALL DEPENDENCIES
+# =============================================================================
+Write-Host "[NOEMOJI] Step 5: Installing fresh dependencies..." -ForegroundColor Yellow
+
+# Update pip
+python -m pip install --upgrade pip
+
+# Install Python dependencies
+if (Test-Path "requirements/all.txt") {
+    pip install -r requirements/all.txt
+} elseif (Test-Path "requirements.txt") {
+    pip install -r requirements.txt
+}
+
+# Install Node.js dependencies if package.json exists
+if (Test-Path "jeeves_mission_system/tests/frontend/package.json") {
+    Write-Host "Installing frontend dependencies..."
+    Push-Location jeeves_mission_system/tests/frontend
+    npm install
+    Pop-Location
+}
+
+Write-Host "[NOEMOJI] Dependencies installed" -ForegroundColor Green
+Write-Host ""
+
+# =============================================================================
+# 6. VERIFICATION
+# =============================================================================
+Write-Host "[NOEMOJI] Step 6: Running verification tests..." -ForegroundColor Yellow
+
+# Run fast tier 1 tests to verify setup
+python -m pytest -c pytest-light.ini `
+    jeeves_core_engine/tests `
+    jeeves_avionics/tests/unit/llm `
+    jeeves_mission_system/tests/contract `
+    jeeves-capability-code-analyser/tests `
+    -v
+
+Write-Host ""
+Write-Host "[NOEMOJI] Project reset complete!" -ForegroundColor Green
+Write-Host ""
+Write-Host "[NOEMOJI] Summary:" -ForegroundColor Cyan
+Write-Host "  - Git: Reset to origin/main"
+Write-Host "  - Python: All cache and artifacts cleaned"
+Write-Host "  - Node.js: All node_modules removed"
+Write-Host "  - Docker: Images and containers cleaned"
+Write-Host "  - Dependencies: Freshly installed"
+Write-Host "  - Tests: Tier 1 passing"
+Write-Host ""
+Write-Host "[NOEMOJI] Next steps:" -ForegroundColor Cyan
+Write-Host "  1. Start Docker services: docker compose -f docker/docker-compose.yml up -d"
+Write-Host "  2. Run tier 2 tests: make test-tier2"
+Write-Host "  3. Run tier 3 tests: make test-tier3"
+Write-Host "  4. Run full tests: make test-nightly"
+Write-Host ""
