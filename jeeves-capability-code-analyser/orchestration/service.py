@@ -167,6 +167,23 @@ class CodeAnalysisService:
             session_id=session_id,
         )
 
+        # Constitutional EventContext pattern for event streaming
+        import asyncio
+        from jeeves_mission_system.orchestrator.agent_events import AgentEventEmitter
+        from jeeves_mission_system.orchestrator.event_context import AgentEventContext
+
+        # Create event emitter and context
+        emitter = AgentEventEmitter()
+        event_context = AgentEventContext(
+            session_id=session_id,
+            request_id=request_id,
+            user_id=user_id,
+            agent_event_emitter=emitter,
+        )
+
+        # Set event context on runtime so agents automatically emit events
+        self._runtime.set_event_context(event_context)
+
         # Emit FLOW_STARTED event
         yield AgentEvent(
             event_type=AgentEventType.FLOW_STARTED,
@@ -177,12 +194,27 @@ class CodeAnalysisService:
             payload={"query": query},
         )
 
-        # Run the pipeline
+        # Run pipeline in background task
+        async def run_pipeline():
+            try:
+                result_envelope = await self._runtime.run(envelope, thread_id=session_id)
+                return result_envelope
+            finally:
+                # Close emitter when pipeline completes
+                await emitter.close()
+
+        pipeline_task = asyncio.create_task(run_pipeline())
+
+        # Stream events as they're emitted by agents (Constitutional pattern)
         try:
-            envelope = await self._runtime.run(envelope, thread_id=session_id)
+            async for event in emitter.events():
+                yield event
+
+            # Wait for pipeline to complete and get final envelope
+            envelope_result = await pipeline_task
 
             # Convert envelope to result and emit
-            result = self._envelope_to_result(envelope, session_id)
+            result = self._envelope_to_result(envelope_result, session_id)
             yield result
 
         except Exception as e:

@@ -210,7 +210,9 @@ def integration_mock_handler(envelope: Any) -> Dict[str, Any]:
 def integration_post_process(envelope: Any, output: Dict[str, Any], agent: Any = None) -> Any:
     """Mark envelope as complete after integration."""
     from jeeves_mission_system.contracts_core import TerminalReason
-    envelope.terminate("completed", TerminalReason.COMPLETED)
+    envelope.terminated = True
+    envelope.termination_reason = "completed"
+    envelope.terminal_reason = TerminalReason.COMPLETED
     return envelope
 
 

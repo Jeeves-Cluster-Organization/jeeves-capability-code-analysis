@@ -165,10 +165,10 @@ class CodeAnalysisNodes:
         if intent_output:
             updates["confidence_history"] = [_create_confidence_snapshot("intent", intent_output)]
 
-        # Handle clarification
-        if envelope.clarification_pending:
+        # Handle clarification (unified interrupt mechanism)
+        if envelope.interrupt_pending and envelope.interrupt and envelope.interrupt.get("type") == "clarification":
             updates["clarification_required"] = True
-            updates["clarification_question"] = envelope.clarification_question
+            updates["clarification_question"] = envelope.interrupt.get("question")
             updates["current_stage"] = "clarification"
 
         self._logger.info(
@@ -176,7 +176,7 @@ class CodeAnalysisNodes:
             envelope_id=envelope.envelope_id,
             intent=intent_output.get("intent"),
             goals_count=len(envelope.all_goals),
-            clarification_needed=envelope.clarification_pending,
+            clarification_needed=envelope.interrupt_pending and envelope.interrupt and envelope.interrupt.get("type") == "clarification",
         )
 
         return updates
