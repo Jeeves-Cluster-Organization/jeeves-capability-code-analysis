@@ -200,15 +200,16 @@ def register_capability() -> None:
     # Register prompts (Layer Extraction Support)
     # Import and register prompts from the prompts module
     try:
-        from prompts.code_analysis import register_code_analysis_prompts
+        from .prompts.code_analysis import register_code_analysis_prompts
         register_code_analysis_prompts()
-    except ImportError:
+    except ImportError as e:
         # Prompts module not available - skip
-        pass
+        import sys
+        print(f"WARNING: Failed to register code analysis prompts: {e}", file=sys.stderr)
 
     # Register contracts (Layer Extraction Support)
     try:
-        from contracts import (
+        from .contracts import (
             TOOL_RESULT_SCHEMAS,
             validate_tool_result,
         )

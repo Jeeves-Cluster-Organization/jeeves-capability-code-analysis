@@ -12,7 +12,8 @@ Resource Tracking Integration:
 - Terminates processing if quota exceeded
 """
 
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+import time
+from typing import Any, AsyncIterator, Callable, Dict, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from jeeves_mission_system.contracts_core import (
@@ -26,6 +27,7 @@ from jeeves_mission_system.contracts_core import (
     ToolExecutorProtocol,
     LLMProviderProtocol,
 )
+from jeeves_mission_system.orchestrator.agent_events import AgentEvent, AgentEventType
 from pipeline_config import CODE_ANALYSIS_PIPELINE
 from orchestration.types import CodeAnalysisResult
 
@@ -70,12 +72,17 @@ class CodeAnalysisService:
             control_tower: Optional Control Tower for resource tracking
             use_mock: Use mock handlers for testing
         """
+        # Get the global prompt registry
+        from jeeves_mission_system.prompts.core.registry import PromptRegistry
+        prompt_registry = PromptRegistry.get_instance()
+
         self._runtime = create_runtime_from_config(
             config=CODE_ANALYSIS_PIPELINE,
             llm_provider_factory=llm_provider_factory,
             tool_executor=tool_executor,
             logger=logger,
             persistence=persistence,
+            prompt_registry=prompt_registry,
             use_mock=use_mock,
         )
         self._persistence = persistence
@@ -123,6 +130,74 @@ class CodeAnalysisService:
 
         return self._envelope_to_result(envelope, session_id)
 
+    async def process_query_streaming(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        query: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[Any]:
+        """
+        Process a code analysis query through the pipeline with event streaming.
+
+        Args:
+            user_id: User identifier
+            session_id: Session identifier for state persistence
+            query: User's query text
+            metadata: Optional metadata dict
+
+        Yields:
+            AgentEvent or CodeAnalysisResult instances
+        """
+        request_id = f"req_{uuid4().hex[:16]}"
+
+        envelope = create_generic_envelope(
+            raw_input=query,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=request_id,
+            metadata=metadata,
+        )
+
+        self._logger.info(
+            "code_analysis_started_streaming",
+            request_id=request_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+        # Emit FLOW_STARTED event
+        yield AgentEvent(
+            event_type=AgentEventType.FLOW_STARTED,
+            agent_name="orchestrator",
+            request_id=request_id,
+            session_id=session_id,
+            timestamp_ms=int(time.time() * 1000),
+            payload={"query": query},
+        )
+
+        # Run the pipeline
+        try:
+            envelope = await self._runtime.run(envelope, thread_id=session_id)
+
+            # Convert envelope to result and emit
+            result = self._envelope_to_result(envelope, session_id)
+            yield result
+
+        except Exception as e:
+            self._logger.error(
+                "code_analysis_streaming_error",
+                request_id=request_id,
+                error=str(e),
+            )
+            # Emit error result
+            yield CodeAnalysisResult(
+                status="error",
+                error=str(e),
+                request_id=request_id,
+            )
+
     async def resume_with_clarification(
         self,
         *,
@@ -157,8 +232,8 @@ class CodeAnalysisService:
         envelope = GenericEnvelope.model_validate(envelope_data)
 
         # Update with clarification
-        envelope.clarification_pending = False
-        envelope.clarification_question = None
+        envelope.interrupt_pending = False
+        envelope.interrupt = None
         envelope.metadata["user_clarification"] = clarification
 
         # Store clarification in intent metadata for reprocessing
@@ -206,13 +281,13 @@ class CodeAnalysisService:
         )
 
         # Check if this is a clarification resume
-        if envelope.clarification_response:
+        if envelope.metadata.get("user_clarification"):
             # Resume from clarification
             self._logger.info(
                 "dispatch_resuming_clarification",
                 envelope_id=pid,
             )
-            envelope.clarification_pending = False
+            envelope.interrupt_pending = False
             envelope.current_stage = "intent"
 
         # Run through pipeline with resource tracking
@@ -222,13 +297,13 @@ class CodeAnalysisService:
         )
 
         # Mark as terminated if completed successfully or errored
-        if result_envelope.terminal_reason == TerminalReason.COMPLETED_SUCCESSFULLY:
+        if result_envelope.terminal_reason == TerminalReason.COMPLETED:
             result_envelope.terminated = True
-        elif result_envelope.terminal_reason and result_envelope.terminal_reason != TerminalReason.COMPLETED_SUCCESSFULLY:
+        elif result_envelope.terminal_reason and result_envelope.terminal_reason != TerminalReason.COMPLETED:
             result_envelope.terminated = True
 
         # If clarification needed, don't mark as terminated
-        if result_envelope.clarification_pending:
+        if result_envelope.interrupt_pending and result_envelope.interrupt and result_envelope.interrupt.get("type") == "clarification":
             result_envelope.terminated = False
 
         # Log final resource usage
@@ -357,21 +432,21 @@ class CodeAnalysisService:
         traversal = envelope.metadata.get("traversal_state", {})
 
         # Clarification pending - return question
-        if envelope.clarification_pending:
+        if envelope.interrupt_pending and envelope.interrupt and envelope.interrupt.get("type") == "clarification":
             self._logger.info(
                 "code_analysis_clarification_needed",
                 envelope_id=envelope.envelope_id,
             )
             return CodeAnalysisResult(
                 status="clarification_needed",
-                clarification_question=envelope.clarification_question,
+                clarification_question=envelope.interrupt.get("question"),
                 thread_id=session_id,
                 envelope_id=envelope.envelope_id,
                 request_id=envelope.request_id,
             )
 
         # Success
-        if envelope.terminal_reason == TerminalReason.COMPLETED_SUCCESSFULLY:
+        if envelope.terminal_reason == TerminalReason.COMPLETED:
             self._logger.info(
                 "code_analysis_completed",
                 envelope_id=envelope.envelope_id,

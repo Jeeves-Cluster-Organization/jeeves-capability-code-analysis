@@ -116,9 +116,83 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
 Write-Host ""
 
 # =============================================================================
-# 5. FRESH INSTALL DEPENDENCIES
+# 5. INITIALIZE DATABASE SCHEMAS
 # =============================================================================
-Write-Host "[NOEMOJI] Step 5: Installing fresh dependencies..." -ForegroundColor Yellow
+Write-Host "[NOEMOJI] Step 5: Initializing database schemas..." -ForegroundColor Yellow
+
+# Wait for PostgreSQL to be ready
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    Write-Host "Waiting for PostgreSQL to be ready..."
+    $retries = 30
+    $ready = $false
+
+    for ($i = 1; $i -le $retries; $i++) {
+        try {
+            docker exec jeeves-postgres pg_isready -U "${env:POSTGRES_USER}" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $ready = $true
+                Write-Host "[NOEMOJI] PostgreSQL is ready" -ForegroundColor Green
+                break
+            }
+        } catch {
+            # Continue waiting
+        }
+        Start-Sleep -Seconds 1
+        Write-Host -NoNewline "."
+    }
+
+    if (-not $ready) {
+        Write-Host ""
+        Write-Host "[NOEMOJI]  PostgreSQL is not ready. Database initialization skipped." -ForegroundColor Yellow
+        Write-Host "   You may need to run schema initialization manually:"
+        Write-Host "   - Base schema: python jeeves-core/jeeves_mission_system/scripts/database/init.py"
+        Write-Host "   - Code analysis schema: bash jeeves-capability-code-analyser/apply_schema.sh"
+    } else {
+        Write-Host ""
+
+        # Initialize base schema
+        Write-Host "Initializing base schema..."
+        try {
+            python jeeves-core/jeeves_mission_system/scripts/database/init.py --verify
+            Write-Host "[NOEMOJI] Base schema initialized" -ForegroundColor Green
+        } catch {
+            Write-Host "[NOEMOJI]  Base schema initialization failed: $_" -ForegroundColor Yellow
+        }
+
+        # Initialize code analysis schema
+        Write-Host "Initializing code analysis schema..."
+        try {
+            if (Test-Path "jeeves-capability-code-analyser/apply_schema.sh") {
+                # Use bash if available (WSL or Git Bash)
+                if (Get-Command bash -ErrorAction SilentlyContinue) {
+                    bash jeeves-capability-code-analyser/apply_schema.sh
+                    Write-Host "[NOEMOJI] Code analysis schema initialized" -ForegroundColor Green
+                } else {
+                    # Fallback: use psql directly if available
+                    if (Get-Command psql -ErrorAction SilentlyContinue) {
+                        $env:PGPASSWORD = "${env:POSTGRES_PASSWORD}"
+                        psql -h "${env:POSTGRES_HOST}" -p "${env:POSTGRES_PORT}" -U "${env:POSTGRES_USER}" -d "${env:POSTGRES_DATABASE}" -f jeeves-capability-code-analyser/database/schemas/002_code_analysis_schema.sql
+                        Write-Host "[NOEMOJI] Code analysis schema initialized" -ForegroundColor Green
+                    } else {
+                        Write-Host "[NOEMOJI]  bash/psql not available. Skipping code analysis schema." -ForegroundColor Yellow
+                        Write-Host "   Install WSL/Git Bash or PostgreSQL client tools to enable this feature"
+                    }
+                }
+            }
+        } catch {
+            Write-Host "[NOEMOJI]  Code analysis schema initialization failed: $_" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "[NOEMOJI]  Docker not available. Database initialization skipped." -ForegroundColor Yellow
+}
+
+Write-Host ""
+
+# =============================================================================
+# 6. FRESH INSTALL DEPENDENCIES
+# =============================================================================
+Write-Host "[NOEMOJI] Step 6: Installing fresh dependencies..." -ForegroundColor Yellow
 
 # Update pip
 python -m pip install --upgrade pip
@@ -142,9 +216,9 @@ Write-Host "[NOEMOJI] Dependencies installed" -ForegroundColor Green
 Write-Host ""
 
 # =============================================================================
-# 6. VERIFICATION
+# 7. VERIFICATION
 # =============================================================================
-Write-Host "[NOEMOJI] Step 6: Running verification tests..." -ForegroundColor Yellow
+Write-Host "[NOEMOJI] Step 7: Running verification tests..." -ForegroundColor Yellow
 
 # Run fast tier 1 tests to verify setup
 python -m pytest -c pytest-light.ini `

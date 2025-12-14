@@ -3,7 +3,11 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(find:*)",
-      "Bash(python3 -m py_compile:*)"
+      "Bash(python3 -m py_compile:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker compose build:*)"
     ]
   }
 }

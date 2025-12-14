@@ -87,8 +87,11 @@ def intent_post_process(envelope: Any, output: Dict[str, Any], agent: Any = None
 
     # Check for clarification
     if output.get("clarification_needed"):
-        envelope.clarification_pending = True
-        envelope.clarification_question = output.get("clarification_question")
+        envelope.interrupt_pending = True
+        envelope.interrupt = {
+            "type": "clarification",
+            "question": output.get("clarification_question"),
+        }
 
     return envelope
 
@@ -206,7 +209,8 @@ def integration_mock_handler(envelope: Any) -> Dict[str, Any]:
 
 def integration_post_process(envelope: Any, output: Dict[str, Any], agent: Any = None) -> Any:
     """Mark envelope as complete after integration."""
-    envelope.terminate("completed_successfully", TerminalReason.COMPLETED_SUCCESSFULLY)
+    from jeeves_mission_system.contracts_core import TerminalReason
+    envelope.terminate("completed", TerminalReason.COMPLETED)
     return envelope
 
 

@@ -36,6 +36,12 @@ from __future__ import annotations
 
 # Constitution R7: Register capability resources BEFORE any infrastructure imports
 # This must happen at module level to ensure registration before lifespan() queries registry
+import sys
+import os
+# Ensure /app is in Python path for capability imports
+if '/app' not in sys.path:
+    sys.path.insert(0, '/app')
+
 from jeeves_capability_code_analyser import register_capability
 register_capability()
 
