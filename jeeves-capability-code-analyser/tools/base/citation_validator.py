@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from jeeves_mission_system.adapters import get_logger
 from jeeves_mission_system.contracts import LoggerProtocol
-from tools.path_helpers import get_repo_path, resolve_path
+from tools.base.path_helpers import get_repo_path, resolve_path
 
 
 @dataclass

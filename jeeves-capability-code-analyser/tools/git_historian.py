@@ -1,4 +1,4 @@
-"""Git Historian - Explain code evolution through git history.
+"""Git Historian - Explain code evolution through git attempt_history.
 
 Phase 2/4 Constitutional Compliance - No auto-registration at import time
 
@@ -14,18 +14,17 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
 from jeeves_mission_system.adapters import get_logger
-from jeeves_mission_system.contracts import LoggerProtocol, ContextBounds
+from jeeves_mission_system.contracts import ToolId, tool_catalog,  LoggerProtocol, ContextBounds
 from jeeves_protocols import RiskLevel
-from tools.robust_tool_base import AttemptRecord, CitationCollector
 
 
 async def _get_blame(path: str, start_line: Optional[int], end_line: Optional[int]) -> Dict[str, Any]:
     """Get git blame information for a file/range."""
     _logger = get_logger()
-    if not tool_registry.has_tool("git_blame"):
+    if not tool_catalog.has_tool(ToolId.GIT_BLAME):
         return {"status": "tool_unavailable", "blame": []}
 
-    git_blame = tool_registry.get_tool_function("git_blame")
+    git_blame = tool_catalog.get_function(ToolId.GIT_BLAME)
     try:
         result = await git_blame(path=path, start_line=start_line, end_line=end_line)
         if result.get("status") == "success":
@@ -37,12 +36,12 @@ async def _get_blame(path: str, start_line: Optional[int], end_line: Optional[in
 
 
 async def _get_log(path: str, n: int, since: Optional[str]) -> Dict[str, Any]:
-    """Get commit history for a file."""
+    """Get commit attempt_history for a file."""
     _logger = get_logger()
-    if not tool_registry.has_tool("git_log"):
+    if not tool_catalog.has_tool(ToolId.GIT_LOG):
         return {"status": "tool_unavailable", "commits": []}
 
-    git_log = tool_registry.get_tool_function("git_log")
+    git_log = tool_catalog.get_function(ToolId.GIT_LOG)
     try:
         result = await git_log(path=path, n=n, since=since)
         if result.get("status") == "success":
@@ -56,10 +55,10 @@ async def _get_log(path: str, n: int, since: Optional[str]) -> Dict[str, Any]:
 async def _get_diff(path: str, commit1: str, commit2: Optional[str]) -> Dict[str, Any]:
     """Get diff for a specific commit on a file."""
     _logger = get_logger()
-    if not tool_registry.has_tool("git_diff"):
+    if not tool_catalog.has_tool(ToolId.GIT_DIFF):
         return {"status": "tool_unavailable", "diff": ""}
 
-    git_diff = tool_registry.get_tool_function("git_diff")
+    git_diff = tool_catalog.get_function(ToolId.GIT_DIFF)
     try:
         result = await git_diff(path=path, commit1=commit1, commit2=commit2, stat=False)
         if result.get("status") == "success":
@@ -99,7 +98,7 @@ async def explain_code_history(
     line_range: Optional[str] = None,
     depth: str = "recent",
 ) -> Dict[str, Any]:
-    """Explain why code looks the way it does via git history.
+    """Explain why code looks the way it does via git attempt_history.
 
     Pipeline:
     1. git_blame(path, line_range) -> author attribution
@@ -108,14 +107,14 @@ async def explain_code_history(
     4. Aggregate into narrative structure
 
     Args:
-        path: File path to analyze history for
+        path: File path to analyze attempt_history for
         context_bounds: Context bounds configuration (from AppContext)
         line_range: Optional line range in format "start-end"
         depth: Analysis depth - "recent", "full", or "summary"
     """
     bounds = context_bounds
-    history: List[AttemptRecord] = []
-    citations = CitationCollector()
+    attempt_history = []
+    all_citations = set()
     bounded = False
     step = 0
 
@@ -133,32 +132,32 @@ async def explain_code_history(
 
     # Step 1: Get blame information
     step += 1
-    history.append(AttemptRecord(
-        step=step,
-        strategy="git_blame",
-        result="pending",
-        params={"path": path, "start_line": start_line, "end_line": end_line},
-    ))
+    attempt_history.append({
+        "step": step,
+        "strategy": "git_blame",
+        "result": "pending",
+        "params": {"path": path, "start_line": start_line, "end_line": end_line},
+    })
 
     blame_result = await _get_blame(path, start_line, end_line)
-    history[-1].result = blame_result["status"]
+    attempt_history[-1]["result"] = blame_result["status"]
     if blame_result.get("error"):
-        history[-1].error = blame_result["error"]
+        attempt_history[-1]["error"] = blame_result["error"]
 
     blame_entries = blame_result.get("blame", [])
     current_owners = _compute_ownership(blame_entries)
 
-    # Step 2: Get commit history
+    # Step 2: Get commit attempt_history
     n_commits = 10 if depth == "recent" else (50 if depth == "full" else 20)
     n_commits = min(n_commits, bounds.max_commits_in_summary)
 
     step += 1
-    history.append(AttemptRecord(step=step, strategy="git_log", result="pending", params={"path": path, "n": n_commits}))
+    attempt_history.append({"step": step, "strategy": "git_log", "result": "pending", "params": {"path": path, "n": n_commits}})
 
     log_result = await _get_log(path, n=n_commits, since=None)
-    history[-1].result = log_result["status"]
+    attempt_history[-1]["result"] = log_result["status"]
     if log_result.get("error"):
-        history[-1].error = log_result["error"]
+        attempt_history[-1]["error"] = log_result["error"]
 
     commits = log_result.get("commits", [])
 
@@ -166,7 +165,7 @@ async def explain_code_history(
     for commit in commits[:5]:
         commit_hash = commit.get("hash", "")
         if commit_hash:
-            citations.add_git_citation(commit_hash)
+            all_citations.add(f"git:{commit_hash}")
 
     # Step 3: Get diffs for key commits (if depth allows)
     key_changes = []
@@ -177,10 +176,10 @@ async def explain_code_history(
             commit_hash = commit.get("hash", "")
 
             step += 1
-            history.append(AttemptRecord(step=step, strategy="git_diff", result="pending", params={"path": path, "commit": commit_hash}))
+            attempt_history.append({"step": step, "strategy": "git_diff", "result": "pending", "params": {"path": path, "commit": commit_hash}})
 
             diff_result = await _get_diff(path=path, commit1=f"{commit_hash}^", commit2=commit_hash)
-            history[-1].result = diff_result["status"]
+            attempt_history[-1]["result"] = diff_result["status"]
 
             if diff_result["status"] == "found":
                 diff_summary = ""
@@ -204,9 +203,9 @@ async def explain_code_history(
 
     # Add file citation
     if line_range:
-        citations.add(f"{path}:{line_range}")
+        all_citations.add(f"{path}:{line_range}")
     else:
-        citations.add(path)
+        all_citations.add(path)
 
     # Build summary
     total_commits = len(commits)
@@ -217,17 +216,17 @@ async def explain_code_history(
         oldest = commits[-1] if commits else {}
         newest = commits[0] if commits else {}
         summary = (
-            f"This file has {total_commits} commits in the analyzed history. "
+            f"This file has {total_commits} commits in the analyzed attempt_history. "
             f"Primary author: {top_owner} ({top_pct}% of lines). "
             f"Most recent change: {newest.get('date', 'unknown')} - {newest.get('message', 'no message')[:50]}"
         )
     else:
-        summary = f"No commit history found for {path}"
+        summary = f"No commit attempt_history found for {path}"
 
     # Determine status
     if commits or blame_entries:
         status = "success"
-    elif any(h.result == "error" for h in history):
+    elif any(h.get("result") == "error" for h in attempt_history):
         status = "partial"
     else:
         status = "success"
@@ -251,8 +250,8 @@ async def explain_code_history(
         "commit_count": len(commits),
         "current_owners": current_owners,
         "blame_entries": blame_entries[:20] if depth == "full" else [],
-        "attempt_history": [h.to_dict() for h in history],
-        "citations": citations.get_all(),
+        "attempt_history": attempt_history,
+        "citations": sorted(list(all_citations)),
         "bounded": bounded,
     }
 

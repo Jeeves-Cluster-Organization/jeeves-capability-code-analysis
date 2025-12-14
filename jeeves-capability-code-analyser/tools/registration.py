@@ -43,7 +43,7 @@ def register_all_tools() -> Dict[str, Any]:
     from tools.git_historian import explain_code_history
     from tools.module_mapper import map_module
     from tools.flow_tracer import trace_entry_point
-    from tools.resilient_ops import read_code, find_related
+    from tools.base.resilient_ops import read_code, find_related
     from tools.unified_analyzer import analyze
 
     registered = []

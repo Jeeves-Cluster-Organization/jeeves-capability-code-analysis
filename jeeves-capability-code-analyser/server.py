@@ -67,7 +67,7 @@ class CodeAnalysisServer:
 
         # Components (initialized in start())
         self.db = None
-        self.tool_registry = None
+        self.tool_catalog = None
         self.code_analysis_service = None
         self.code_indexer = None
         self.tool_health_service = None
@@ -116,7 +116,7 @@ class CodeAnalysisServer:
         self._logger.info("graph_repository_initialized")
 
         # Initialize RAG-based code indexer (via adapters)
-        from tools.semantic_tools import set_code_indexer
+        from tools.base.semantic_tools import set_code_indexer
         self.code_indexer = create_code_indexer(self.db)
         set_code_indexer(self.code_indexer)
         self._logger.info("code_indexer_initialized", semantic_search_enabled=True)
@@ -135,15 +135,16 @@ class CodeAnalysisServer:
         # Initialize tools
         self._logger.info("initializing_tools")
         tool_instances = initialize_all_tools(db=self.db)
-        self.tool_registry = tool_instances["registry"]
+        self.tool_catalog = tool_instances["catalog"]
 
         # Initialize memory services (via adapters)
         self.tool_health_service = create_tool_health_service(self.db)
         await self.tool_health_service.ensure_initialized()
 
         # Register tool names with health service
-        if self.tool_registry and hasattr(self.tool_registry, 'tools'):
-            tool_names = list(self.tool_registry.tools.keys())
+        if self.tool_catalog:
+            tool_ids = self.tool_catalog.list_all_ids()
+            tool_names = [str(tool_id.value) for tool_id in tool_ids]
             self.tool_health_service.set_registered_tools(tool_names)
             self._logger.info("tools_registered_with_health", tool_count=len(tool_names))
 
@@ -160,7 +161,7 @@ class CodeAnalysisServer:
         self._logger.info("creating_mission_runtime")
         use_mock = os.getenv("MOCK_LLM_ENABLED", "").lower() in ("true", "1", "yes")
         runtime = create_mission_runtime(
-            tool_registry=self.tool_registry,
+            tool_registry=self.tool_catalog,
             persistence=self.db,
             settings=settings,
             use_mock=use_mock,
@@ -204,7 +205,7 @@ class CodeAnalysisServer:
         self._logger.info(
             "code_analysis_capability_ready",
             listen_addr=listen_addr,
-            tools_registered=len(self.tool_registry.tools),
+            tools_registered=len(self.tool_catalog.list_all_ids()),
             status="SERVING",
         )
 

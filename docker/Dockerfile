@@ -174,34 +174,8 @@ COPY --chown=1000:1000 jeeves-core/jeeves_mission_system/ ./jeeves_mission_syste
 COPY --chown=1000:1000 jeeves-capability-code-analyser/ ./jeeves_capability_code_analyser/
 
 # Copy code analysis capability to app root for imports
-# Copy ALL composite tools (includes correct __init__.py with proper imports)
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/*.py ./tools/
-# Create tools/base directory and copy base module files
-# These are imported as tools.base.* (code_tools, git_tools, etc.)
-RUN mkdir -p ./tools/base
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/__init__.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/code_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/common_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/git_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/index_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/semantic_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/session_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/system_tools.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/citation_validator.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/path_helpers.py ./tools/base/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/resilient_ops.py ./tools/base/
-# Also copy ALL base tools to tools/ root for flat imports (tools.semantic_tools, etc.)
-# server.py uses: from tools.semantic_tools import set_code_indexer
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/code_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/common_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/git_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/index_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/semantic_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/session_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/system_tools.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/citation_validator.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/path_helpers.py ./tools/
-COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/base/resilient_ops.py ./tools/
+# Simplified: Copy entire tools directory preserving structure
+COPY --chown=1000:1000 jeeves-capability-code-analyser/tools/ ./tools/
 # Copy other capability components
 COPY --chown=1000:1000 jeeves-capability-code-analyser/agents/ ./agents/
 COPY --chown=1000:1000 jeeves-capability-code-analyser/models/ ./models/
@@ -338,35 +312,8 @@ COPY --chown=jeeves:jeeves jeeves-core/jeeves_mission_system/ ./jeeves_mission_s
 COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/ ./jeeves_capability_code_analyser/
 
 # Copy code analysis capability (tools, agents, models, etc.) to app root
-# This makes "from tools import ..." and similar imports work
-# First copy ALL composite tools from tools root (includes correct __init__.py)
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/*.py ./tools/
-# Create tools/base directory and copy base module files
-# These are imported as tools.base.* (code_tools, git_tools, etc.)
-RUN mkdir -p ./tools/base && chown jeeves:jeeves ./tools/base
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/__init__.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/code_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/common_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/git_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/index_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/semantic_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/session_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/system_tools.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/citation_validator.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/path_helpers.py ./tools/base/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/resilient_ops.py ./tools/base/
-# Also copy ALL base tools to tools/ root for flat imports (tools.semantic_tools, etc.)
-# server.py uses: from tools.semantic_tools import set_code_indexer
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/code_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/common_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/git_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/index_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/semantic_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/session_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/system_tools.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/citation_validator.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/path_helpers.py ./tools/
-COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/base/resilient_ops.py ./tools/
+# Simplified: Copy entire tools directory preserving structure
+COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/tools/ ./tools/
 # Copy other capability components
 COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/agents/ ./agents/
 COPY --chown=jeeves:jeeves jeeves-capability-code-analyser/models/ ./models/

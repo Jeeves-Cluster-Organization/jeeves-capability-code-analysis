@@ -24,9 +24,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from jeeves_mission_system.adapters import get_logger
-from jeeves_mission_system.contracts import ContextBounds, ToolId, tool_catalog
+from jeeves_mission_system.contracts import ToolId, tool_catalog,  ContextBounds, ToolId, tool_catalog
 from jeeves_protocols import RiskLevel, OperationStatus, ToolCategory
-from tools.robust_tool_base import AttemptRecord, CitationCollector
 
 
 class TargetType(Enum):
@@ -76,8 +75,8 @@ def _detect_target_type(target: str) -> TargetType:
 async def _analyze_symbol(symbol: str, include_usages: bool = True) -> Dict[str, Any]:
     """Analyze a symbol: find definition, usages, and containing module."""
     _logger = get_logger()
-    citations = CitationCollector()
-    attempts = []
+    all_citations = set()
+    attempt_history = []
 
     result = {
         "target": symbol,
@@ -89,15 +88,15 @@ async def _analyze_symbol(symbol: str, include_usages: bool = True) -> Dict[str,
     }
 
     # Step 1: Find symbol definition and usages via explore_symbol_usage
-    if tool_registry.has_tool("explore_symbol_usage"):
-        explore = tool_registry.get_tool_function("explore_symbol_usage")
+    if tool_catalog.has_tool(ToolId.EXPLORE_SYMBOL_USAGE):
+        explore = tool_catalog.get_function(ToolId.EXPLORE_SYMBOL_USAGE)
         try:
             explore_result = await explore(symbol_name=symbol, include_call_sites=include_usages)
-            attempts.append(AttemptRecord(
-                tool="explore_symbol_usage",
-                status="success" if explore_result.get("status") == "success" else "partial",
-                result_summary=f"Found {len(explore_result.get('usages', []))} usages"
-            ))
+            attempt_history.append({
+                "tool": "explore_symbol_usage",
+                "status": "success" if explore_result.get("status") == "success" else "partial",
+                "result_summary": f"Found {len(explore_result.get('usages', []))} usages"
+            })
 
             if explore_result.get("status") == "success":
                 result["definition"] = explore_result.get("definition")
@@ -106,29 +105,29 @@ async def _analyze_symbol(symbol: str, include_usages: bool = True) -> Dict[str,
                 # Collect citations
                 if explore_result.get("definition"):
                     defn = explore_result["definition"]
-                    citations.add(defn.get("file", ""), defn.get("line", 0), "definition")
+                    all_citations.add(f"{defn.get('file', '')}:{defn.get('line', 0)}")
                 for usage in explore_result.get("usages", [])[:5]:
-                    citations.add(usage.get("file", ""), usage.get("line", 0), "usage")
+                    all_citations.add(f"{usage.get('file', '')}:{usage.get('line', 0)}")
 
         except Exception as e:
             _logger.warning("analyze_explore_symbol_error", symbol=symbol, error=str(e))
-            attempts.append(AttemptRecord(tool="explore_symbol_usage", status="error", error=str(e)))
+            attempt_history.append({"tool": "explore_symbol_usage", "status": "error", "error": str(e)})
 
     # Step 2: Get module context if we found a definition
-    if result["definition"] and tool_registry.has_tool("map_module"):
+    if result["definition"] and tool_catalog.has_tool(ToolId.MAP_MODULE):
         defn_file = result["definition"].get("file", "")
         if defn_file:
             # Extract module path (directory containing the file)
             module_path = "/".join(defn_file.split("/")[:-1])
             if module_path:
-                map_module = tool_registry.get_tool_function("map_module")
+                map_module = tool_catalog.get_function(ToolId.MAP_MODULE)
                 try:
                     module_result = await map_module(module_path=module_path, depth=1)
-                    attempts.append(AttemptRecord(
-                        tool="map_module",
-                        status="success" if module_result.get("status") == "success" else "partial",
-                        result_summary=f"Mapped {module_path}"
-                    ))
+                    attempt_history.append({
+                        "tool": "map_module",
+                        "status": "success" if module_result.get("status") == "success" else "partial",
+                        "result_summary": f"Mapped {module_path}"
+                    })
 
                     if module_result.get("status") == "success":
                         result["module_context"] = {
@@ -138,18 +137,18 @@ async def _analyze_symbol(symbol: str, include_usages: bool = True) -> Dict[str,
                         }
                 except Exception as e:
                     _logger.warning("analyze_map_module_error", module=module_path, error=str(e))
-                    attempts.append(AttemptRecord(tool="map_module", status="error", error=str(e)))
+                    attempt_history.append({"tool": "map_module", "status": "error", "error": str(e)})
 
-    result["attempts"] = [a.__dict__ if hasattr(a, '__dict__') else a for a in attempts]
-    result["citations"] = citations.to_list()
+    result["attempt_history"] = attempt_history
+    result["citations"] = sorted(list(all_citations))
     return result
 
 
 async def _analyze_module(module_path: str) -> Dict[str, Any]:
     """Analyze a module: structure, exports, dependencies."""
     _logger = get_logger()
-    citations = CitationCollector()
-    attempts = []
+    all_citations = set()
+    attempt_history = []
 
     # Normalize path
     module_path = module_path.rstrip('/')
@@ -165,15 +164,15 @@ async def _analyze_module(module_path: str) -> Dict[str, Any]:
     }
 
     # Use map_module for comprehensive module analysis
-    if tool_registry.has_tool("map_module"):
-        map_module = tool_registry.get_tool_function("map_module")
+    if tool_catalog.has_tool(ToolId.MAP_MODULE):
+        map_module = tool_catalog.get_function(ToolId.MAP_MODULE)
         try:
             module_result = await map_module(module_path=module_path, depth=2)
-            attempts.append(AttemptRecord(
-                tool="map_module",
-                status="success" if module_result.get("status") == "success" else "partial",
-                result_summary=f"Mapped {module_path}"
-            ))
+            attempt_history.append({
+                "tool": "map_module",
+                "status": "success" if module_result.get("status") == "success" else "partial",
+                "result_summary": f"Mapped {module_path}"
+            })
 
             if module_result.get("status") == "success":
                 result["structure"] = module_result.get("structure")
@@ -183,23 +182,23 @@ async def _analyze_module(module_path: str) -> Dict[str, Any]:
 
                 # Add citations for key files
                 for f in result["key_files"][:5]:
-                    citations.add(f, 1, "key_file")
+                    all_citations.add(f"{f}:1")
 
         except Exception as e:
             _logger.warning("analyze_module_error", module=module_path, error=str(e))
-            attempts.append(AttemptRecord(tool="map_module", status="error", error=str(e)))
+            attempt_history.append({"tool": "map_module", "status": "error", "error": str(e)})
             result["status"] = "partial"
 
-    result["attempts"] = [a.__dict__ if hasattr(a, '__dict__') else a for a in attempts]
-    result["citations"] = citations.to_list()
+    result["attempt_history"] = attempt_history
+    result["citations"] = sorted(list(all_citations))
     return result
 
 
 async def _analyze_file(file_path: str) -> Dict[str, Any]:
     """Analyze a file: read content, extract symbols."""
     _logger = get_logger()
-    citations = CitationCollector()
-    attempts = []
+    all_citations = set()
+    attempt_history = []
 
     result = {
         "target": file_path,
@@ -211,36 +210,36 @@ async def _analyze_file(file_path: str) -> Dict[str, Any]:
     }
 
     # Read the file content
-    if tool_registry.has_tool("read_code"):
-        read_code = tool_registry.get_tool_function("read_code")
+    if tool_catalog.has_tool(ToolId.READ_CODE):
+        read_code = tool_catalog.get_function(ToolId.READ_CODE)
         try:
             read_result = await read_code(path=file_path)
-            attempts.append(AttemptRecord(
-                tool="read_code",
-                status="success" if read_result.get("status") == "success" else "error",
-                result_summary=f"Read {file_path}"
-            ))
+            attempt_history.append({
+                "tool": "read_code",
+                "status": "success" if read_result.get("status") == "success" else "error",
+                "result_summary": f"Read {file_path}"
+            })
 
             if read_result.get("status") == "success":
                 result["content"] = read_result.get("content")
                 result["symbols"] = read_result.get("symbols", [])
-                citations.add(file_path, 1, "file_content")
+                all_citations.add(f"{file_path}:1")
 
         except Exception as e:
             _logger.warning("analyze_file_error", file=file_path, error=str(e))
-            attempts.append(AttemptRecord(tool="read_code", status="error", error=str(e)))
+            attempt_history.append({"tool": "read_code", "status": "error", "error": str(e)})
             result["status"] = "error"
 
-    result["attempts"] = [a.__dict__ if hasattr(a, '__dict__') else a for a in attempts]
-    result["citations"] = citations.to_list()
+    result["attempt_history"] = attempt_history
+    result["citations"] = sorted(list(all_citations))
     return result
 
 
 async def _analyze_query(query: str) -> Dict[str, Any]:
     """Analyze a natural language query: locate relevant code."""
     _logger = get_logger()
-    citations = CitationCollector()
-    attempts = []
+    all_citations = set()
+    attempt_history = []
 
     result = {
         "target": query,
@@ -251,46 +250,46 @@ async def _analyze_query(query: str) -> Dict[str, Any]:
     }
 
     # Use locate for finding relevant code
-    if tool_registry.has_tool("locate"):
-        locate = tool_registry.get_tool_function("locate")
+    if tool_catalog.has_tool(ToolId.LOCATE):
+        locate = tool_catalog.get_function(ToolId.LOCATE)
         try:
             locate_result = await locate(query=query)
-            attempts.append(AttemptRecord(
-                tool="locate",
-                status="success" if locate_result.get("status") == "success" else "partial",
-                result_summary=f"Found {len(locate_result.get('matches', []))} matches"
-            ))
+            attempt_history.append({
+                "tool": "locate",
+                "status": "success" if locate_result.get("status") == "success" else "partial",
+                "result_summary": f"Found {len(locate_result.get('matches', []))} matches"
+            })
 
             if locate_result.get("status") == "success":
                 result["matches"] = locate_result.get("matches", [])
 
                 for match in result["matches"][:5]:
-                    citations.add(match.get("file", ""), match.get("line", 0), "match")
+                    all_citations.add(f"{match.get('file', '')}:{match.get('line', 0)}")
 
         except Exception as e:
             _logger.warning("analyze_query_error", query=query, error=str(e))
-            attempts.append(AttemptRecord(tool="locate", status="error", error=str(e)))
+            attempt_history.append({"tool": "locate", "status": "error", "error": str(e)})
 
     # Also find related files
-    if tool_registry.has_tool("find_related"):
-        find_related = tool_registry.get_tool_function("find_related")
+    if tool_catalog.has_tool(ToolId.FIND_RELATED):
+        find_related = tool_catalog.get_function(ToolId.FIND_RELATED)
         try:
             related_result = await find_related(query=query, max_results=5)
-            attempts.append(AttemptRecord(
-                tool="find_related",
-                status="success" if related_result.get("status") == "success" else "partial",
-                result_summary=f"Found {len(related_result.get('files', []))} related files"
-            ))
+            attempt_history.append({
+                "tool": "find_related",
+                "status": "success" if related_result.get("status") == "success" else "partial",
+                "result_summary": f"Found {len(related_result.get('files', []))} related files"
+            })
 
             if related_result.get("status") == "success":
                 result["related_files"] = related_result.get("files", [])
 
         except Exception as e:
             _logger.warning("analyze_query_find_related_error", query=query, error=str(e))
-            attempts.append(AttemptRecord(tool="find_related", status="error", error=str(e)))
+            attempt_history.append({"tool": "find_related", "status": "error", "error": str(e)})
 
-    result["attempts"] = [a.__dict__ if hasattr(a, '__dict__') else a for a in attempts]
-    result["citations"] = citations.to_list()
+    result["attempt_history"] = attempt_history
+    result["citations"] = sorted(list(all_citations))
     return result
 
 
@@ -321,7 +320,7 @@ async def analyze(
         - target: The analyzed target
         - target_type: Detected or specified type
         - [type-specific fields]: definition, usages, structure, content, etc.
-        - attempts: Tools called and their status
+        - attempt_history: Tools called and their status
         - citations: File:line references for evidence
         - status: "success", "partial", or "error"
     """
@@ -359,7 +358,7 @@ async def analyze(
         target=target,
         target_type=detected_type.value,
         status=result.get("status"),
-        attempts_count=len(result.get("attempts", [])),
+        attempts_count=len(result.get("attempt_history", [])),
         citations_count=len(result.get("citations", [])),
     )
 

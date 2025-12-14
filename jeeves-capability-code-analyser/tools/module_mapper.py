@@ -14,19 +14,18 @@ from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
 from jeeves_mission_system.adapters import get_logger
-from jeeves_mission_system.contracts import LoggerProtocol, ContextBounds
+from jeeves_mission_system.contracts import ToolId, tool_catalog,  LoggerProtocol, ContextBounds
 from jeeves_protocols import RiskLevel, OperationStatus
-from tools.robust_tool_base import AttemptRecord, CitationCollector
 from config.tool_profiles import detect_semantic_mismatch
 
 
 async def _get_tree(module_path: str, depth: int) -> Dict[str, Any]:
     """Get directory tree for the module."""
     _logger = get_logger()
-    if not tool_registry.has_tool("tree_structure"):
+    if not tool_catalog.has_tool(ToolId.TREE_STRUCTURE):
         return {"status": "tool_unavailable", "tree": "", "file_count": 0, "dir_count": 0}
 
-    tree_structure = tool_registry.get_tool_function("tree_structure")
+    tree_structure = tool_catalog.get_function(ToolId.TREE_STRUCTURE)
     try:
         result = await tree_structure(path=module_path, depth=depth, max_entries=500)
         if result.get("status") == "success":
@@ -45,10 +44,10 @@ async def _get_tree(module_path: str, depth: int) -> Dict[str, Any]:
 async def _get_files(module_path: str) -> Dict[str, Any]:
     """Get list of Python files in the module."""
     _logger = get_logger()
-    if not tool_registry.has_tool("glob_files"):
+    if not tool_catalog.has_tool(ToolId.GLOB_FILES):
         return {"status": "tool_unavailable", "files": []}
 
-    glob_files = tool_registry.get_tool_function("glob_files")
+    glob_files = tool_catalog.get_function(ToolId.GLOB_FILES)
     try:
         pattern = f"{module_path}/**/*.py" if module_path else "**/*.py"
         result = await glob_files(pattern=pattern, max_results=100)
@@ -63,10 +62,10 @@ async def _get_files(module_path: str) -> Dict[str, Any]:
 async def _get_symbols(file_path: str) -> Dict[str, Any]:
     """Get symbols defined in a file."""
     _logger = get_logger()
-    if not tool_registry.has_tool("get_file_symbols"):
+    if not tool_catalog.has_tool(ToolId.GET_FILE_SYMBOLS):
         return {"status": "tool_unavailable", "symbols": []}
 
-    get_file_symbols = tool_registry.get_tool_function("get_file_symbols")
+    get_file_symbols = tool_catalog.get_function(ToolId.GET_FILE_SYMBOLS)
     try:
         result = await get_file_symbols(path=file_path, include_body=False)
         if result.get("status") == "success":
@@ -80,10 +79,10 @@ async def _get_symbols(file_path: str) -> Dict[str, Any]:
 async def _get_imports(file_path: str) -> Dict[str, Any]:
     """Get imports from a file."""
     _logger = get_logger()
-    if not tool_registry.has_tool("get_imports"):
+    if not tool_catalog.has_tool(ToolId.GET_IMPORTS):
         return {"status": "tool_unavailable", "imports": []}
 
-    get_imports = tool_registry.get_tool_function("get_imports")
+    get_imports = tool_catalog.get_function(ToolId.GET_IMPORTS)
     try:
         result = await get_imports(path=file_path)
         if result.get("status") == "success":
@@ -97,10 +96,10 @@ async def _get_imports(file_path: str) -> Dict[str, Any]:
 async def _get_consumers(module_path: str) -> Dict[str, Any]:
     """Get files that import from this module."""
     _logger = get_logger()
-    if not tool_registry.has_tool("get_importers"):
+    if not tool_catalog.has_tool(ToolId.GET_IMPORTERS):
         return {"status": "tool_unavailable", "consumers": []}
 
-    get_importers = tool_registry.get_tool_function("get_importers")
+    get_importers = tool_catalog.get_function(ToolId.GET_IMPORTERS)
     try:
         module_name = module_path.replace("/", ".").replace("\\", ".")
         if module_name.endswith(".py"):
@@ -237,8 +236,8 @@ async def map_module(
         }
 
     bounds = context_bounds
-    history: List[AttemptRecord] = []
-    citations = CitationCollector()
+    attempt_history = []
+    all_citations = set()
     bounded = False
     step = 0
 
@@ -246,12 +245,12 @@ async def map_module(
 
     # Step 1: Get module tree structure
     step += 1
-    history.append(AttemptRecord(step=step, strategy="tree_structure", result="pending", params={"path": module_path}))
+    attempt_history.append({"step": step, "strategy": "tree_structure", "result": "pending", "params": {"path": module_path}})
 
     tree_result = await _get_tree(module_path, depth=3)
-    history[-1].result = tree_result["status"]
+    attempt_history[-1]["result"] = tree_result["status"]
     if tree_result.get("error"):
-        history[-1].error = tree_result["error"]
+        attempt_history[-1]["error"] = tree_result["error"]
 
     tree_text = tree_result.get("tree", "")
     file_count = tree_result.get("file_count", 0)
@@ -259,10 +258,10 @@ async def map_module(
 
     # Step 2: Get file list
     step += 1
-    history.append(AttemptRecord(step=step, strategy="glob_files", result="pending", params={"pattern": f"{module_path}/**/*.py"}))
+    attempt_history.append({"step": step, "strategy": "glob_files", "result": "pending", "params": {"pattern": f"{module_path}/**/*.py"}})
 
     files_result = await _get_files(module_path)
-    history[-1].result = files_result["status"]
+    attempt_history[-1]["result"] = files_result["status"]
 
     files = files_result.get("files", [])
 
@@ -276,15 +275,15 @@ async def map_module(
     all_symbols: List[Dict] = []
     for file_path in files:
         step += 1
-        history.append(AttemptRecord(step=step, strategy="get_file_symbols", result="pending", params={"path": file_path}))
+        attempt_history.append({"step": step, "strategy": "get_file_symbols", "result": "pending", "params": {"path": file_path}})
 
         sym_result = await _get_symbols(file_path)
-        history[-1].result = sym_result["status"]
+        attempt_history[-1]["result"] = sym_result["status"]
 
         for sym in sym_result.get("symbols", []):
             sym["file"] = file_path
             all_symbols.append(sym)
-            citations.add(file_path, sym.get("line", 1))
+            all_citations.add(f"{file_path}:{sym.get('line', 1)}")
 
         if len(all_symbols) >= bounds.max_symbols_in_summary:
             bounded = True
@@ -298,10 +297,10 @@ async def map_module(
 
     for file_path in files[:20]:  # Limit import analysis
         step += 1
-        history.append(AttemptRecord(step=step, strategy="get_imports", result="pending", params={"path": file_path}))
+        attempt_history.append({"step": step, "strategy": "get_imports", "result": "pending", "params": {"path": file_path}})
 
         imp_result = await _get_imports(file_path)
-        history[-1].result = imp_result["status"]
+        attempt_history[-1]["result"] = imp_result["status"]
 
         file_imports = imp_result.get("imports", [])
         all_imports.extend(file_imports)
@@ -314,10 +313,10 @@ async def map_module(
 
     # Step 5: Get consumers
     step += 1
-    history.append(AttemptRecord(step=step, strategy="get_importers", result="pending", params={"module": module_path}))
+    attempt_history.append({"step": step, "strategy": "get_importers", "result": "pending", "params": {"module": module_path}})
 
     consumers_result = await _get_consumers(module_path)
-    history[-1].result = consumers_result["status"]
+    attempt_history[-1]["result"] = consumers_result["status"]
 
     consumers = consumers_result.get("consumers", [])
 
@@ -336,7 +335,7 @@ async def map_module(
     # Determine status
     if files or all_symbols:
         status = "success"
-    elif any(h.result == "error" for h in history):
+    elif any(h.get("result") == "error" for h in attempt_history):
         status = "partial"
     else:
         status = "success"
@@ -368,8 +367,8 @@ async def map_module(
         "consumer_count": len(consumers),
         "responsibilities": responsibilities,
         "dep_graph": dep_graph,
-        "attempt_history": [h.to_dict() for h in history],  # ALWAYS a list (Amendment XVII)
-        "citations": citations.get_all()[:bounds.max_matches_in_summary],
+        "attempt_history": attempt_history,
+        "citations": sorted(list(all_citations))[:bounds.max_matches_in_summary],
         "bounded": bounded,
     }
 

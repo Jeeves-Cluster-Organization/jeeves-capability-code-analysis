@@ -14,9 +14,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 from jeeves_mission_system.adapters import get_logger
-from jeeves_mission_system.contracts import LoggerProtocol, ContextBounds
+from jeeves_mission_system.contracts import ToolId, tool_catalog,  LoggerProtocol, ContextBounds
 from jeeves_protocols import RiskLevel
-from tools.robust_tool_base import AttemptRecord, CitationCollector
 
 # Framework-specific patterns for entry point detection
 FRAMEWORK_PATTERNS = {
@@ -50,10 +49,10 @@ FRAMEWORK_PATTERNS = {
 
 async def _detect_framework() -> Dict[str, Any]:
     """Detect which web/CLI framework is used in the project."""
-    if not tool_registry.has_tool("grep_search"):
+    if not tool_catalog.has_tool(ToolId.GREP_SEARCH):
         return {"status": "tool_unavailable", "frameworks": [], "primary": None}
 
-    grep_search = tool_registry.get_tool_function("grep_search")
+    grep_search = tool_catalog.get_function(ToolId.GREP_SEARCH)
     detected = []
 
     for fid, patterns in FRAMEWORK_PATTERNS.items():
@@ -77,10 +76,10 @@ async def _detect_framework() -> Dict[str, Any]:
 
 async def _find_entry_points(entry_type: str, pattern: str, framework: Optional[Dict]) -> Dict[str, Any]:
     """Find entry point definitions."""
-    if not tool_registry.has_tool("grep_search"):
+    if not tool_catalog.has_tool(ToolId.GREP_SEARCH):
         return {"status": "tool_unavailable", "entry_points": []}
 
-    grep_search = tool_registry.get_tool_function("grep_search")
+    grep_search = tool_catalog.get_function(ToolId.GREP_SEARCH)
     entry_points = []
 
     if entry_type == "http_route":
@@ -157,10 +156,10 @@ async def _find_entry_points(entry_type: str, pattern: str, framework: Optional[
 async def _trace_calls(file_path: str, start_line: int) -> Dict[str, Any]:
     """Trace function calls from a starting point."""
     _logger = get_logger()
-    if not tool_registry.has_tool("read_file"):
+    if not tool_catalog.has_tool(ToolId.READ_FILE):
         return {"status": "tool_unavailable", "calls": []}
 
-    read_file = tool_registry.get_tool_function("read_file")
+    read_file = tool_catalog.get_function(ToolId.READ_FILE)
     try:
         result = await read_file(path=file_path, start_line=start_line, end_line=start_line + 50, max_tokens=2000)
         if result.get("status") != "success":
@@ -186,10 +185,10 @@ async def _trace_calls(file_path: str, start_line: int) -> Dict[str, Any]:
 
 async def _resolve_target(call_name: str) -> Dict[str, Any]:
     """Resolve where a called function is defined."""
-    if not tool_registry.has_tool("find_symbol"):
+    if not tool_catalog.has_tool(ToolId.FIND_SYMBOL):
         return {"status": "tool_unavailable", "target": None}
 
-    find_symbol = tool_registry.get_tool_function("find_symbol")
+    find_symbol = tool_catalog.get_function(ToolId.FIND_SYMBOL)
     symbol_to_find = call_name.split(".")[-1]  # Get method/function name
 
     try:
@@ -258,43 +257,43 @@ async def trace_entry_point(
         max_depth: Maximum call chain depth to trace
     """
     bounds = context_bounds
-    history: List[AttemptRecord] = []
-    citations = CitationCollector()
+    attempt_history = []
+    all_citations = set()
     bounded = False
     step = 0
 
     # Step 1: Detect framework
     step += 1
-    history.append(AttemptRecord(step=step, strategy="framework_detection", result="pending", params={"purpose": "detect_framework"}))
+    attempt_history.append({"step": step, "strategy": "framework_detection", "result": "pending", "params": {"purpose": "detect_framework"}})
 
     framework_result = await _detect_framework()
-    history[-1].result = framework_result["status"]
+    attempt_history[-1]["result"] = framework_result["status"]
 
     framework = framework_result.get("primary")
     frameworks_found = framework_result.get("frameworks", [])
 
     # Step 2: Find entry points
     step += 1
-    history.append(AttemptRecord(step=step, strategy="find_entry_points", result="pending", params={"entry_type": entry_type, "pattern": pattern}))
+    attempt_history.append({"step": step, "strategy": "find_entry_points", "result": "pending", "params": {"entry_type": entry_type, "pattern": pattern}})
 
     entry_result = await _find_entry_points(entry_type, pattern, framework)
-    history[-1].result = entry_result["status"]
+    attempt_history[-1]["result"] = entry_result["status"]
 
     entry_points = entry_result.get("entry_points", [])
 
     # Add citations for entry points
     for ep in entry_points:
-        citations.add(ep["file"], ep["line"])
+        all_citations.add(f"{ep['file']}:{ep['line']}")
 
     # Step 3: Trace call chain from each entry point
     call_chains = []
 
     for ep in entry_points[:3]:  # Limit to first 3 entry points
         step += 1
-        history.append(AttemptRecord(step=step, strategy="trace_calls", result="pending", params={"file": ep["file"], "line": ep["line"]}))
+        attempt_history.append({"step": step, "strategy": "trace_calls", "result": "pending", "params": {"file": ep["file"], "line": ep["line"]}})
 
         trace_result = await _trace_calls(ep["file"], ep["line"])
-        history[-1].result = trace_result["status"]
+        attempt_history[-1]["result"] = trace_result["status"]
 
         calls = trace_result.get("calls", [])
 
@@ -311,7 +310,7 @@ async def trace_entry_point(
                     "callee_file": target["file"],
                     "callee_line": target["line"],
                 })
-                citations.add(target["file"], target["line"])
+                all_citations.add(f"{target['file']}:{target['line']}")
 
             if len(resolved_calls) >= bounds.max_call_chain_length:
                 bounded = True
@@ -325,7 +324,7 @@ async def trace_entry_point(
     # Determine status
     if entry_points:
         status = "success"
-    elif any(h.result == "error" for h in history):
+    elif any(h.get("result") == "error" for h in attempt_history):
         status = "partial"
     else:
         status = "success"
@@ -349,8 +348,8 @@ async def trace_entry_point(
         "entry_point_count": len(entry_points),
         "call_chains": call_chains,
         "execution_flow": execution_flow,
-        "attempt_history": [h.to_dict() for h in history],
-        "citations": list(set(citations.get_all())),
+        "attempt_history": attempt_history,
+        "citations": sorted(list(all_citations)),
         "bounded": bounded,
     }
 

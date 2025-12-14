@@ -23,15 +23,7 @@ from typing import Any, Dict, List, Optional
 from jeeves_mission_system.adapters import get_logger
 from jeeves_mission_system.contracts import LoggerProtocol, ToolId, tool_catalog
 from jeeves_protocols import RiskLevel, ToolCategory
-from tools.path_helpers import get_repo_path, resolve_path
-from tools.robust_tool_base import (
-    RobustToolExecutor,
-    ToolResult,
-    CitationCollector,
-    AttemptRecord,
-    StrategyResult,
-    RetryPolicy,
-)
+from tools.base.path_helpers import get_repo_path, resolve_path
 
 
 # Extension swap mappings for fuzzy path matching
@@ -58,10 +50,10 @@ async def _strategy_exact_path(
     **kwargs,
 ) -> Dict[str, Any]:
     """Strategy 1: Try exact path."""
-    if not tool_registry.has_tool("read_file"):
+    if not tool_catalog.has_tool(ToolId.READ_FILE):
         return {"status": "tool_unavailable"}
 
-    read_file = tool_registry.get_tool_function("read_file")
+    read_file = tool_catalog.get_function(ToolId.READ_FILE)
     result = await read_file(path=path, start_line=start_line, end_line=end_line)
 
     if result.get("status") == "success":
@@ -86,10 +78,10 @@ async def _strategy_extension_swap(
     **kwargs,
 ) -> Dict[str, Any]:
     """Strategy 2: Try alternative extensions (.py <-> .pyi, .ts <-> .tsx, etc.)."""
-    if not tool_registry.has_tool("read_file"):
+    if not tool_catalog.has_tool(ToolId.READ_FILE):
         return {"status": "tool_unavailable"}
 
-    read_file = tool_registry.get_tool_function("read_file")
+    read_file = tool_catalog.get_function(ToolId.READ_FILE)
     base, ext = os.path.splitext(path)
 
     if ext not in EXTENSION_SWAPS:
@@ -127,11 +119,11 @@ async def _strategy_glob_filename(
     **kwargs,
 ) -> Dict[str, Any]:
     """Strategy 3: Glob search for exact filename anywhere in repo."""
-    if not tool_registry.has_tool("glob_files") or not tool_registry.has_tool("read_file"):
+    if not tool_catalog.has_tool(ToolId.GLOB_FILES) or not tool_catalog.has_tool(ToolId.READ_FILE):
         return {"status": "tool_unavailable"}
 
-    glob_files = tool_registry.get_tool_function("glob_files")
-    read_file = tool_registry.get_tool_function("read_file")
+    glob_files = tool_catalog.get_function(ToolId.GLOB_FILES)
+    read_file = tool_catalog.get_function(ToolId.READ_FILE)
 
     filename = os.path.basename(path)
     glob_pattern = f"**/{filename}"
@@ -173,10 +165,10 @@ async def _strategy_glob_stem(
     **kwargs,
 ) -> Dict[str, Any]:
     """Strategy 4: Glob for stem pattern (provides suggestions only)."""
-    if not tool_registry.has_tool("glob_files"):
+    if not tool_catalog.has_tool(ToolId.GLOB_FILES):
         return {"status": "tool_unavailable"}
 
-    glob_files = tool_registry.get_tool_function("glob_files")
+    glob_files = tool_catalog.get_function(ToolId.GLOB_FILES)
 
     filename = os.path.basename(path)
     stem = os.path.splitext(filename)[0]
@@ -227,46 +219,68 @@ async def read_code(
         - citations: [file:line] references
         - message: Human-readable summary
     """
-    executor = RobustToolExecutor(
-        name="read_code",
-        retry_policy=RetryPolicy(max_retries=2),
-        max_results=1,
-    )
+    attempt_history = []
+    suggestions = []
 
-    # Build the fallback chain
-    executor.add_strategy("exact_path", _strategy_exact_path)
-    executor.add_strategy("extension_swap", _strategy_extension_swap)
-    executor.add_strategy("glob_filename", _strategy_glob_filename)
-    executor.add_strategy("glob_stem", _strategy_glob_stem)
+    # Strategy 1: Exact path
+    result = await _strategy_exact_path(path, start_line, end_line)
+    attempt_history.append({"strategy": "exact_path", "status": result["status"]})
+    if result["status"] == "success":
+        return {
+            "status": "success",
+            "content": result["results"][0]["content"],
+            "resolved_path": result["resolved_path"],
+            "attempt_history": attempt_history,
+            "citations": [f"{result['resolved_path']}:{start_line or 1}"],
+        }
 
-    # Execute with fallbacks
-    result = await executor.execute(
+    # Strategy 2: Extension swap
+    result = await _strategy_extension_swap(path, start_line, end_line)
+    attempt_history.append({"strategy": "extension_swap", "status": result["status"]})
+    if result["status"] == "success":
+        return {
+            "status": "success",
+            "content": result["results"][0]["content"],
+            "resolved_path": result["resolved_path"],
+            "attempt_history": attempt_history,
+            "citations": [f"{result['resolved_path']}:{start_line or 1}"],
+        }
+
+    # Strategy 3: Glob filename
+    result = await _strategy_glob_filename(path, start_line, end_line)
+    attempt_history.append({"strategy": "glob_filename", "status": result["status"]})
+    if result["status"] == "success":
+        return {
+            "status": "success",
+            "content": result["results"][0]["content"],
+            "resolved_path": result["resolved_path"],
+            "attempt_history": attempt_history,
+            "citations": [f"{result['resolved_path']}:{start_line or 1}"],
+            "other_matches": result.get("other_matches", []),
+        }
+
+    # Strategy 4: Glob stem (suggestions only)
+    result = await _strategy_glob_stem(path)
+    attempt_history.append({"strategy": "glob_stem", "status": result["status"]})
+    if "suggestions" in result:
+        suggestions = result["suggestions"]
+
+    # All strategies failed
+    _logger = get_logger()
+    _logger.warning(
+        "read_code_not_found",
         path=path,
-        start_line=start_line,
-        end_line=end_line,
+        attempts=len(attempt_history),
+        suggestions=suggestions[:3] if suggestions else [],
     )
 
-    # Transform to read_code specific output format
-    output = result.to_dict()
-
-    # Add resolved_path and content for backward compatibility
-    if result.status == "success" and result.results:
-        output["content"] = result.results[0].get("content", "")
-        output["resolved_path"] = result.results[0].get("path", path)
-    else:
-        output["error"] = f"File not found: {path}"
-
-    # Log loud failure with context
-    if result.status != "success":
-        _logger = get_logger()
-        _logger.warning(
-            "read_code_not_found",
-            path=path,
-            attempts=len(result.attempt_history),
-            suggestions=result.suggestions[:3] if result.suggestions else [],
-        )
-
-    return output
+    return {
+        "status": "not_found",
+        "error": f"File not found: {path}",
+        "attempt_history": attempt_history,
+        "suggestions": suggestions,
+        "citations": [],
+    }
 
 
 # ============================================================
@@ -285,10 +299,10 @@ async def _strategy_content_similarity(
     if not resolved or not resolved.exists():
         return {"status": "no_match", "reason": "file_not_found"}
 
-    if not tool_registry.has_tool("find_similar_files"):
+    if not tool_catalog.has_tool(ToolId.FIND_SIMILAR_FILES):
         return {"status": "tool_unavailable"}
 
-    find_similar = tool_registry.get_tool_function("find_similar_files")
+    find_similar = tool_catalog.get_function(ToolId.FIND_SIMILAR_FILES)
     result = await find_similar(file_path=reference, limit=limit)
 
     if result.get("status") == "success" and result.get("similar_files"):
@@ -314,10 +328,10 @@ async def _strategy_filename_pattern(
     if not is_path:
         return {"status": "no_match", "reason": "not_a_path"}
 
-    if not tool_registry.has_tool("glob_files"):
+    if not tool_catalog.has_tool(ToolId.GLOB_FILES):
         return {"status": "tool_unavailable"}
 
-    glob_files = tool_registry.get_tool_function("glob_files")
+    glob_files = tool_catalog.get_function(ToolId.GLOB_FILES)
 
     filename = os.path.basename(reference)
     stem = os.path.splitext(filename)[0]
@@ -347,10 +361,10 @@ async def _strategy_semantic_search(
     **kwargs,
 ) -> Dict[str, Any]:
     """Strategy 3: Semantic search using reference as query."""
-    if not tool_registry.has_tool("semantic_search"):
+    if not tool_catalog.has_tool(ToolId.SEMANTIC_SEARCH):
         return {"status": "tool_unavailable"}
 
-    semantic_search = tool_registry.get_tool_function("semantic_search")
+    semantic_search = tool_catalog.get_function(ToolId.SEMANTIC_SEARCH)
 
     # Use the reference (or filename) as the query
     is_path = "/" in reference or reference.endswith((".py", ".ts", ".js", ".tsx", ".jsx"))
@@ -403,38 +417,66 @@ async def find_related(
         - citations: [file:line] references
         - message: Human-readable summary
     """
-    executor = RobustToolExecutor(
-        name="find_related",
-        retry_policy=RetryPolicy(max_retries=2),
-        max_results=limit,
-    )
+    attempt_history = []
+    related_files = []
 
-    # Build the fallback chain
-    executor.add_strategy("content_similarity", _strategy_content_similarity)
-    executor.add_strategy("filename_pattern", _strategy_filename_pattern)
-    executor.add_strategy("semantic_search", _strategy_semantic_search)
+    # Strategy 1: Content similarity (if file exists)
+    result = await _strategy_content_similarity(reference, limit)
+    attempt_history.append({"strategy": "content_similarity", "status": result["status"]})
+    if result["status"] == "success":
+        related_files = result["results"]
+        citations = [f"{r['file']}:1" for r in related_files]
+        return {
+            "status": "success",
+            "reference": reference,
+            "related_files": related_files,
+            "attempt_history": attempt_history,
+            "citations": citations,
+        }
 
-    # Execute with fallbacks
-    result = await executor.execute(
+    # Strategy 2: Filename pattern
+    result = await _strategy_filename_pattern(reference, limit)
+    attempt_history.append({"strategy": "filename_pattern", "status": result["status"]})
+    if result["status"] == "success":
+        related_files = result["results"]
+        citations = [f"{r['file']}:1" for r in related_files]
+        return {
+            "status": "success",
+            "reference": reference,
+            "related_files": related_files,
+            "attempt_history": attempt_history,
+            "citations": citations,
+        }
+
+    # Strategy 3: Semantic search
+    result = await _strategy_semantic_search(reference, limit)
+    attempt_history.append({"strategy": "semantic_search", "status": result["status"]})
+    if result["status"] == "success":
+        related_files = result["results"]
+        citations = [f"{r['file']}:1" for r in related_files]
+        return {
+            "status": "success",
+            "reference": reference,
+            "related_files": related_files,
+            "attempt_history": attempt_history,
+            "citations": citations,
+        }
+
+    # All strategies failed
+    _logger = get_logger()
+    _logger.warning(
+        "find_related_no_results",
         reference=reference,
-        limit=limit,
+        attempts=len(attempt_history),
     )
 
-    # Transform to find_related specific output format
-    output = result.to_dict()
-    output["reference"] = reference
-    output["related_files"] = result.results
-
-    # Log failure with context
-    if result.status not in ("success",):
-        _logger = get_logger()
-        _logger.warning(
-            "find_related_no_results",
-            reference=reference,
-            attempts=len(result.attempt_history),
-        )
-
-    return output
+    return {
+        "status": "not_found",
+        "reference": reference,
+        "related_files": [],
+        "attempt_history": attempt_history,
+        "citations": [],
+    }
 
 
 # ============================================================
@@ -446,52 +488,7 @@ async def find_related(
 # which specifies 5 composite tools (including locate) + 3 resilient tools.
 
 
-# ============================================================
-# Tool Catalog Registration (Decision 1:A compliance)
-# ============================================================
-def _register_resilient_tools_in_catalog():
-    """Register resilient tools with the canonical ToolCatalog.
-
-    Per Decision 1:A: ToolCatalog is the single source of truth.
-    Tools must be registered here for Planner to see them in prompts.
-    """
-    # Register read_code
-    if not tool_catalog.has_tool(ToolId.READ_CODE):
-        tool_catalog.register_function(
-            tool_id=ToolId.READ_CODE,
-            func=read_code,
-            description=(
-                "Read file with robust multi-path fallbacks. "
-                "Tries: exact path -> extension swap -> glob filename -> glob stem suggestions."
-            ),
-            parameters={
-                "path": "string (required)",
-                "start_line": "integer? (optional)",
-                "end_line": "integer? (optional)",
-            },
-            category=ToolCategory.RESILIENT,
-        )
-
-    # Register find_related
-    if not tool_catalog.has_tool(ToolId.FIND_RELATED):
-        tool_catalog.register_function(
-            tool_id=ToolId.FIND_RELATED,
-            func=find_related,
-            description=(
-                "Find related files using semantic similarity and pattern matching. "
-                "Works even if reference file doesn't exist."
-            ),
-            parameters={
-                "reference": "string (required)",
-                "limit": "integer? (optional, default 10)",
-            },
-            category=ToolCategory.RESILIENT,
-        )
-
-
-# Auto-register on import
-_register_resilient_tools_in_catalog()
-
-
 # Export the main functions
+# Note: Tools are registered in tools/registration.py (centralized registration)
+# Per Phase 2/4 Constitutional Compliance - No auto-registration at import time
 __all__ = ["read_code", "find_related"]

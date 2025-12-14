@@ -9,58 +9,20 @@ Per Amendment XVII (Composite Tool Contracts), this tool:
 - Respects context bounds
 - Degrades gracefully on step failures
 
-Refactored to use RobustToolExecutor (unifying composite/resilient tool patterns).
+Constitutional Pattern:
+- Simple async function (no custom executor infrastructure)
+- Calls tools via tool_catalog.get_function(ToolId.XXX)
+- Tracks attempts manually
+- Returns attempt_history for transparency
 """
 
 import re
 from typing import Any, Dict, Optional
 
 from jeeves_mission_system.adapters import get_logger
-from jeeves_mission_system.contracts import LoggerProtocol
-from jeeves_protocols import RiskLevel
-from tools.robust_tool_base import (
-    RobustToolExecutor,
-    make_strategy,
-    ResultMappers,
-)
+from jeeves_mission_system.contracts import LoggerProtocol, ToolId, tool_catalog
+from jeeves_protocols import RiskLevel, ToolCategory
 
-
-# ============================================================
-# Strategy Parameter Mappers
-# ============================================================
-
-def _params_find_symbol_exact(query: str, scope: Optional[str] = None, **_) -> Dict[str, Any]:
-    """Map locate params to find_symbol with exact=True."""
-    return {"name": query, "exact": True, "path_prefix": scope}
-
-
-def _params_find_symbol_partial(query: str, scope: Optional[str] = None, **_) -> Dict[str, Any]:
-    """Map locate params to find_symbol with exact=False."""
-    return {"name": query, "exact": False, "path_prefix": scope}
-
-
-def _params_grep_sensitive(query: str, scope: Optional[str] = None, **_) -> Dict[str, Any]:
-    """Map locate params to grep_search (case-sensitive)."""
-    # Escape special regex chars for literal search
-    pattern = re.escape(query)
-    return {"pattern": pattern, "path": scope, "max_results": 20}
-
-
-def _params_grep_insensitive(query: str, scope: Optional[str] = None, **_) -> Dict[str, Any]:
-    """Map locate params to grep_search (case-insensitive)."""
-    # Escape and add case-insensitive flag
-    pattern = f"(?i){re.escape(query)}"
-    return {"pattern": pattern, "path": scope, "max_results": 20}
-
-
-def _params_semantic(query: str, scope: Optional[str] = None, **_) -> Dict[str, Any]:
-    """Map locate params to semantic_search."""
-    return {"query": query, "limit": 10, "path_prefix": scope}
-
-
-# ============================================================
-# Main Locate Tool
-# ============================================================
 
 async def locate(
     query: str,
@@ -75,8 +37,6 @@ async def locate(
     2. Returns attempt_history for transparency
     3. Collects citations from all steps
     4. Respects context bounds
-
-    Uses RobustToolExecutor for unified fallback chain execution.
 
     Fallback sequence (for search_type='auto'):
     1. find_symbol(exact=True) - Exact symbol match
@@ -102,79 +62,140 @@ async def locate(
         - scope_used: Scope that was applied
         - bounded: Whether search was limited by bounds
     """
-    # Create executor with configured max_results
-    executor = RobustToolExecutor(
-        name="locate",
-        max_results=max_results,
-    )
+    attempt_history = []
+    all_citations = set()
 
-    # Build fallback chain based on search_type
-    if search_type == "symbol":
-        executor.add_strategy(
-            "find_symbol (exact)",
-            make_strategy("find_symbol", ResultMappers.symbols, _params_find_symbol_exact)
-        )
-        executor.add_strategy(
-            "find_symbol (partial)",
-            make_strategy("find_symbol", ResultMappers.symbols, _params_find_symbol_partial)
-        )
+    # Strategy 1: Exact symbol match
+    if search_type in ("auto", "symbol"):
+        if tool_catalog.has_tool(ToolId.FIND_SYMBOL):
+            find_symbol = tool_catalog.get_function(ToolId.FIND_SYMBOL)
+            result = await find_symbol(name=query, exact=True, path_prefix=scope)
+            attempt_history.append({"strategy": "find_symbol (exact)", "status": result.get("status")})
 
-    elif search_type == "text":
-        executor.add_strategy(
-            "grep_search (case-sensitive)",
-            make_strategy("grep_search", ResultMappers.grep_matches, _params_grep_sensitive)
-        )
-        executor.add_strategy(
-            "grep_search (case-insensitive)",
-            make_strategy("grep_search", ResultMappers.grep_matches, _params_grep_insensitive)
-        )
+            if result.get("status") == "success" and result.get("symbols"):
+                for sym in result["symbols"][:max_results]:
+                    all_citations.add(f"{sym.get('file')}:{sym.get('line', 1)}")
 
-    elif search_type == "semantic":
-        executor.add_strategy(
-            "semantic_search",
-            make_strategy("semantic_search", ResultMappers.semantic_results, _params_semantic)
-        )
+                return {
+                    "status": "success",
+                    "query": query,
+                    "found_via": "find_symbol (exact)",
+                    "results": result["symbols"][:max_results],
+                    "attempt_history": attempt_history,
+                    "citations": sorted(list(all_citations)),
+                    "scope_used": scope,
+                    "bounded": len(result["symbols"]) > max_results,
+                }
 
-    else:  # auto - try all strategies in order
-        executor.add_strategy(
-            "find_symbol (exact)",
-            make_strategy("find_symbol", ResultMappers.symbols, _params_find_symbol_exact)
-        )
-        executor.add_strategy(
-            "find_symbol (partial)",
-            make_strategy("find_symbol", ResultMappers.symbols, _params_find_symbol_partial)
-        )
-        executor.add_strategy(
-            "grep_search (case-sensitive)",
-            make_strategy("grep_search", ResultMappers.grep_matches, _params_grep_sensitive)
-        )
-        executor.add_strategy(
-            "grep_search (case-insensitive)",
-            make_strategy("grep_search", ResultMappers.grep_matches, _params_grep_insensitive)
-        )
-        executor.add_strategy(
-            "semantic_search",
-            make_strategy("semantic_search", ResultMappers.semantic_results, _params_semantic)
-        )
+    # Strategy 2: Partial symbol match
+    if search_type in ("auto", "symbol"):
+        if tool_catalog.has_tool(ToolId.FIND_SYMBOL):
+            find_symbol = tool_catalog.get_function(ToolId.FIND_SYMBOL)
+            result = await find_symbol(name=query, exact=False, path_prefix=scope)
+            attempt_history.append({"strategy": "find_symbol (partial)", "status": result.get("status")})
 
-    # Execute the fallback chain
-    result = await executor.execute(query=query, scope=scope)
+            if result.get("status") == "success" and result.get("symbols"):
+                for sym in result["symbols"][:max_results]:
+                    all_citations.add(f"{sym.get('file')}:{sym.get('line', 1)}")
 
-    # Convert to locate-specific output format
-    output = result.to_dict()
-    output["query"] = query
-    output["scope_used"] = scope
+                return {
+                    "status": "success",
+                    "query": query,
+                    "found_via": "find_symbol (partial)",
+                    "results": result["symbols"][:max_results],
+                    "attempt_history": attempt_history,
+                    "citations": sorted(list(all_citations)),
+                    "scope_used": scope,
+                    "bounded": len(result["symbols"]) > max_results,
+                }
 
+    # Strategy 3: Grep case-sensitive
+    if search_type in ("auto", "text"):
+        if tool_catalog.has_tool(ToolId.GREP_SEARCH):
+            grep_search = tool_catalog.get_function(ToolId.GREP_SEARCH)
+            pattern = re.escape(query)  # Literal search
+            result = await grep_search(pattern=pattern, path=scope, max_results=max_results)
+            attempt_history.append({"strategy": "grep_search (case-sensitive)", "status": result.get("status")})
+
+            if result.get("status") == "success" and result.get("matches"):
+                for match in result["matches"]:
+                    all_citations.add(f"{match.get('file')}:{match.get('line', 1)}")
+
+                return {
+                    "status": "success",
+                    "query": query,
+                    "found_via": "grep_search (case-sensitive)",
+                    "results": result["matches"],
+                    "attempt_history": attempt_history,
+                    "citations": sorted(list(all_citations)),
+                    "scope_used": scope,
+                    "bounded": False,
+                }
+
+    # Strategy 4: Grep case-insensitive
+    if search_type in ("auto", "text"):
+        if tool_catalog.has_tool(ToolId.GREP_SEARCH):
+            grep_search = tool_catalog.get_function(ToolId.GREP_SEARCH)
+            pattern = f"(?i){re.escape(query)}"  # Case-insensitive
+            result = await grep_search(pattern=pattern, path=scope, max_results=max_results)
+            attempt_history.append({"strategy": "grep_search (case-insensitive)", "status": result.get("status")})
+
+            if result.get("status") == "success" and result.get("matches"):
+                for match in result["matches"]:
+                    all_citations.add(f"{match.get('file')}:{match.get('line', 1)}")
+
+                return {
+                    "status": "success",
+                    "query": query,
+                    "found_via": "grep_search (case-insensitive)",
+                    "results": result["matches"],
+                    "attempt_history": attempt_history,
+                    "citations": sorted(list(all_citations)),
+                    "scope_used": scope,
+                    "bounded": False,
+                }
+
+    # Strategy 5: Semantic search
+    if search_type in ("auto", "semantic"):
+        if tool_catalog.has_tool(ToolId.SEMANTIC_SEARCH):
+            semantic_search = tool_catalog.get_function(ToolId.SEMANTIC_SEARCH)
+            result = await semantic_search(query=query, limit=min(max_results, 10), path_prefix=scope)
+            attempt_history.append({"strategy": "semantic_search", "status": result.get("status")})
+
+            if result.get("status") == "success" and result.get("results"):
+                for res in result["results"]:
+                    all_citations.add(f"{res.get('file')}:{res.get('line', 1)}")
+
+                return {
+                    "status": "success",
+                    "query": query,
+                    "found_via": "semantic_search",
+                    "results": result["results"],
+                    "attempt_history": attempt_history,
+                    "citations": sorted(list(all_citations)),
+                    "scope_used": scope,
+                    "bounded": False,
+                }
+
+    # All strategies failed
     _logger = get_logger()
     _logger.info(
-        "locate_completed",
+        "locate_not_found",
         query=query,
-        found_via=result.found_via,
-        result_count=len(result.results),
-        attempts=len(result.attempt_history),
+        search_type=search_type,
+        attempts=len(attempt_history),
     )
 
-    return output
+    return {
+        "status": "not_found",
+        "query": query,
+        "found_via": None,
+        "results": [],
+        "attempt_history": attempt_history,
+        "citations": [],
+        "scope_used": scope,
+        "bounded": False,
+    }
 
 
 __all__ = ["locate"]
