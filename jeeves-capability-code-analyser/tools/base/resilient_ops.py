@@ -372,7 +372,8 @@ async def _strategy_semantic_search(
 
     result = await semantic_search(query=query, limit=limit)
 
-    if result.get("status") == "success" and result.get("results"):
+    # semantic_search returns "files", not "results"
+    if result.get("status") == "success" and result.get("files"):
         return {
             "status": "success",
             "results": [
@@ -380,7 +381,7 @@ async def _strategy_semantic_search(
                     "file": r.get("file", r.get("path", "")),
                     "relevance": f"semantic (score: {r.get('score', 0):.2f})",
                 }
-                for r in result["results"]
+                for r in result["files"]
             ],
         }
 

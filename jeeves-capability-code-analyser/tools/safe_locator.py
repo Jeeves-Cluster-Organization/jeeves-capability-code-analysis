@@ -162,15 +162,16 @@ async def locate(
             result = await semantic_search(query=query, limit=min(max_results, 10), path_prefix=scope)
             attempt_history.append({"strategy": "semantic_search", "status": result.get("status")})
 
-            if result.get("status") == "success" and result.get("results"):
-                for res in result["results"]:
+            # semantic_search returns "files", not "results"
+            if result.get("status") == "success" and result.get("files"):
+                for res in result["files"]:
                     all_citations.add(f"{res.get('file')}:{res.get('line', 1)}")
 
                 return {
                     "status": "success",
                     "query": query,
                     "found_via": "semantic_search",
-                    "results": result["results"],
+                    "results": result["files"],  # Normalize to "results" for consumers
                     "attempt_history": attempt_history,
                     "citations": sorted(list(all_citations)),
                     "scope_used": scope,

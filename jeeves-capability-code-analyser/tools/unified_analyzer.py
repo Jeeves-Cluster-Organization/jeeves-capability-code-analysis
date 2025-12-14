@@ -261,8 +261,9 @@ async def _analyze_file(file_path: str) -> Dict[str, Any]:
                     "result_summary": f"Searched for '{stem}'"
                 })
 
-                if locate_result.get("status") == "success" and locate_result.get("matches"):
-                    result["matches"] = locate_result.get("matches", [])
+                if locate_result.get("status") == "success" and locate_result.get("results"):
+                    # locate tool returns "results", not "matches"
+                    result["matches"] = locate_result.get("results", [])
                     result["fallback_search"] = stem
                     for match in result["matches"][:5]:
                         all_citations.add(f"{match.get('file', '')}:{match.get('line', 0)}")
@@ -303,11 +304,12 @@ async def _analyze_query(query: str) -> Dict[str, Any]:
             attempt_history.append({
                 "tool": "locate",
                 "status": "success" if locate_result.get("status") == "success" else "partial",
-                "result_summary": f"Found {len(locate_result.get('matches', []))} matches"
+                "result_summary": f"Found {len(locate_result.get('results', []))} matches"
             })
 
             if locate_result.get("status") == "success":
-                result["matches"] = locate_result.get("matches", [])
+                # locate tool returns "results", not "matches"
+                result["matches"] = locate_result.get("results", [])
 
                 for match in result["matches"][:5]:
                     all_citations.add(f"{match.get('file', '')}:{match.get('line', 0)}")

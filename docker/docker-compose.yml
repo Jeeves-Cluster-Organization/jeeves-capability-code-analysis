@@ -9,15 +9,23 @@
 #   dev:     All services (same as no profile)
 #   minimal: Core services only (orchestrator, postgres, llama-server) - no gateway
 #
+# IMPORTANT: Run from PROJECT ROOT with --env-file flag to ensure HOST_REPO_PATH is read:
+#
 # Usage (from project root):
-#   Build services:         docker compose -f docker/docker-compose.yml build
-#   Start all services:     docker compose -f docker/docker-compose.yml up -d
-#   Start production:       docker compose -f docker/docker-compose.yml --profile prod up -d
-#   Build test image:       docker compose -f docker/docker-compose.yml --profile test build test
-#   Run tests:              docker compose -f docker/docker-compose.yml --profile test run --rm test pytest tests/unit/ -v
-#   Run gateway tests:      docker compose -f docker/docker-compose.yml --profile test run --rm test pytest tests/integration/test_gateway.py -v
-#   Stop services:          docker compose -f docker/docker-compose.yml down
-#   View logs:              docker compose -f docker/docker-compose.yml logs -f
+#   Build services:         docker compose --env-file .env -f docker/docker-compose.yml build
+#   Start all services:     docker compose --env-file .env -f docker/docker-compose.yml up -d
+#   Start production:       docker compose --env-file .env -f docker/docker-compose.yml --profile prod up -d
+#   Build test image:       docker compose --env-file .env -f docker/docker-compose.yml --profile test build test
+#   Run tests:              docker compose --env-file .env -f docker/docker-compose.yml --profile test run --rm test pytest tests/unit/ -v
+#   Run gateway tests:      docker compose --env-file .env -f docker/docker-compose.yml --profile test run --rm test pytest tests/integration/test_gateway.py -v
+#   Stop services:          docker compose --env-file .env -f docker/docker-compose.yml down
+#   View logs:              docker compose --env-file .env -f docker/docker-compose.yml logs -f
+#
+# Why --env-file is required:
+#   Docker Compose variable substitution (${VAR}) in volume mounts reads from:
+#   1. Shell environment
+#   2. .env in the SAME directory as docker-compose.yml (i.e., docker/.env)
+#   Since our .env is in the project root, we must explicitly specify --env-file .env
 #
 # Build options:
 #   Build sequentially:     docker compose build --parallel 1  (for low-memory systems)
@@ -83,8 +91,18 @@ services:
     volumes:
       - ../data:/app/data
       - ../.env:/app/.env:ro
-      # Workspace for code analysis (mount your repo here)
-      - ${HOST_REPO_PATH:-..}:/workspace:ro
+      # ══════════════════════════════════════════════════════════════════════
+      # CODE ANALYSIS REPOSITORY MOUNT
+      # ══════════════════════════════════════════════════════════════════════
+      # HOST_REPO_PATH: Set in .env to the repository you want to analyze
+      # The repo is mounted at /workspace (read-only) inside the container
+      #
+      # Example .env configuration:
+      #   HOST_REPO_PATH=/home/user/projects/my-target-repo
+      #
+      # Tools will search within REPO_PATH (default: /workspace)
+      # ══════════════════════════════════════════════════════════════════════
+      - ${HOST_REPO_PATH:-.}:/workspace:ro
 
     # Resource limits
     deploy:
