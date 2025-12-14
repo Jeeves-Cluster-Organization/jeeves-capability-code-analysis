@@ -116,10 +116,10 @@ CODE_ANALYSIS_TOOLS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
-# EXPOSED TOOLS (Amendment XXII) - Only visible to agents
+# EXPOSED TOOLS - Only visible to agents
 # ═══════════════════════════════════════════════════════════════════════════
 EXPOSED_TOOLS = [
-    "analyze",       # Primary: auto-detects target, orchestrates internal tools
+    "search_code",   # Primary: searches for code, never assumes paths exist
     "read_code",     # Direct file reading with retry
     "find_related",  # Semantic search for related files
     "git_status",    # Current repo state
@@ -127,7 +127,7 @@ EXPOSED_TOOLS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════
-# INTERNAL TOOLS - Not exposed to agents, used by analyze internally
+# INTERNAL TOOLS - Not exposed to agents, used by search_code internally
 # ═══════════════════════════════════════════════════════════════════════════
 INTERNAL_COMPOSITE_TOOLS = [
     "locate",
@@ -137,8 +137,8 @@ INTERNAL_COMPOSITE_TOOLS = [
     "trace_entry_point",
 ]
 
-# Unified analyzer tool (Amendment XXII)
-UNIFIED_TOOLS = ["analyze"]
+# Unified search tool
+UNIFIED_TOOLS = ["search_code"]
 
 # For backward compatibility with validation code
 COMPOSITE_TOOLS = INTERNAL_COMPOSITE_TOOLS
