@@ -1,6 +1,6 @@
 # Jeeves Code Analysis Capability - Repository Index
 
-**Version:** 1.0.0 | **Status:** Development | **Updated:** 2025-12-14
+**Version:** 1.0.0 | **Status:** Development | **Updated:** 2025-12-16
 
 ---
 
@@ -49,6 +49,8 @@ jeeves-capability-code-analysis/
 | Document | Purpose |
 |----------|---------|
 | [README.md](README.md) | Project overview and quick start |
+| [docs/INDEX.md](docs/INDEX.md) | **Full documentation index** |
+| [docs/JEEVES_CORE_RUNTIME_CONTRACT.md](docs/JEEVES_CORE_RUNTIME_CONTRACT.md) | **Source of Truth** - Import boundaries, protocols (v1.2) |
 | [docs/CONSTITUTION.md](docs/CONSTITUTION.md) | Capability layer constitution |
 | [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) | Test organization and strategy |
 | [jeeves-capability-code-analyser/CONSTITUTION.md](jeeves-capability-code-analyser/CONSTITUTION.md) | Detailed capability rules |
@@ -186,4 +188,4 @@ from coreengine.agents import Agent  # Wrong
 
 ---
 
-*Last Updated: 2025-12-14*
+*Last Updated: 2025-12-16*
