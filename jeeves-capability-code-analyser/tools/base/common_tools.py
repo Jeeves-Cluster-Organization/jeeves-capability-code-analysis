@@ -1,4 +1,15 @@
-"""Common utility tools for debugging and system operations."""
+"""Common utility tools for debugging and system operations.
+
+Tool Result Contract (jeeves-core v1.2+):
+    {
+        "status": "success" | "error" | "not_found" | "partial",
+        "data": {...},
+        "error": "...",
+        "error_type": "...",
+        "citations": [...],
+        "execution_time_ms": 123
+    }
+"""
 
 from typing import Dict, Any, Optional
 
@@ -27,16 +38,14 @@ class CommonTools:
             **kwargs: Any parameters
 
         Returns:
-            StandardToolResult (as dict) with the echoed payload
+            Tool result dict with the echoed payload
         """
-        from jeeves_mission_system.contracts import StandardToolResult
-
         self._logger.info("echo", payload=kwargs)
 
-        return StandardToolResult.success(
-            data={"payload": kwargs},
-            message=f"ECHO: {kwargs!r}"
-        ).model_dump()
+        return {
+            "status": "success",
+            "data": {"payload": kwargs},
+        }
 
     async def health_check(
         self
@@ -45,10 +54,8 @@ class CommonTools:
         Perform a health check (database connectivity, etc.).
 
         Returns:
-            StandardToolResult (as dict) with health status
+            Tool result dict with health status
         """
-        from jeeves_mission_system.contracts import StandardToolResult
-
         try:
             # Check database connectivity
             result = await self.db.fetch_one("SELECT 1 as test")
@@ -64,10 +71,10 @@ class CommonTools:
 
         self._logger.info("health_check", db_status=db_status)
 
-        return StandardToolResult.success(
-            data={"database": db_status},
-            message=f"System health: database={db_status}"
-        ).model_dump()
+        return {
+            "status": "success",
+            "data": {"database": db_status},
+        }
 
     async def get_system_info(
         self
@@ -76,10 +83,8 @@ class CommonTools:
         Get system information (tables, counts, etc.).
 
         Returns:
-            StandardToolResult (as dict) with system stats
+            Tool result dict with system stats
         """
-        from jeeves_mission_system.contracts import StandardToolResult, ToolErrorDetails
-
         try:
             # Get table counts
             tasks_count = await self.db.fetch_one("SELECT COUNT(*) as count FROM tasks")
@@ -89,8 +94,9 @@ class CommonTools:
 
             self._logger.info("system_info_retrieved")
 
-            return StandardToolResult.success(
-                data={
+            return {
+                "status": "success",
+                "data": {
                     "tables": {
                         "tasks": tasks_count.get("count", 0) if tasks_count else 0,
                         "kv_store": kv_count.get("count", 0) if kv_count else 0,
@@ -98,15 +104,15 @@ class CommonTools:
                         "requests": requests_count.get("count", 0) if requests_count else 0
                     }
                 },
-                message="System information retrieved"
-            ).model_dump()
+            }
 
         except Exception as e:
             self._logger.error("system_info_failed", error=str(e))
-            return StandardToolResult.failure(
-                error=ToolErrorDetails.from_exception(e, recoverable=True),
-                message=f"Failed to get system info: {str(e)}"
-            ).model_dump()
+            return {
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
 
 
 # Register tools with the registry
