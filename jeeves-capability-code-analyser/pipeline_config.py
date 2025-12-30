@@ -463,7 +463,14 @@ def _extract_snippets_from_tool_results(tool_results: List[Any]) -> str:
     snippets = []
 
     for result in tool_results:
-        tool_result = result.get("result", {})
+        wrapped_result = result.get("result", {})
+
+        if not isinstance(wrapped_result, dict):
+            continue
+
+        # Unwrap ToolExecutionCore wrapper: {"status": ..., "data": <actual_result>}
+        # Fallback to wrapped_result if no "data" key (for direct tool results)
+        tool_result = wrapped_result.get("data", wrapped_result)
 
         if not isinstance(tool_result, dict):
             continue
@@ -565,6 +572,11 @@ def _extract_snippets_from_tool_results(tool_results: List[Any]) -> str:
     return "\n\n---\n\n".join(snippets)
 
 
+class CodeAnalysisError(Exception):
+    """Raised when code analysis cannot proceed due to missing data."""
+    pass
+
+
 def executor_post_process(envelope: Any, output: Dict[str, Any], agent: Any = None) -> Any:
     """
     Post-process executor results.
@@ -573,12 +585,61 @@ def executor_post_process(envelope: Any, output: Dict[str, Any], agent: Any = No
     1. files_examined - list of file paths for tracking
     2. snippets - formatted code snippets for LLM context (CRITICAL for downstream agents)
     3. results - raw tool results for downstream access
+
+    Raises:
+        CodeAnalysisError: If search returned no results (loud failure to prevent hallucination)
     """
     tool_results = output.get("tool_results", [])
+
+    # LOUD FAILURE: If no tool results or all searches failed, stop the pipeline
+    # This prevents downstream agents from hallucinating with empty data
+    if not tool_results:
+        raise CodeAnalysisError("Executor produced no tool results - cannot proceed")
+
+    # Check if all search results are empty/failed
+    # NOTE: ToolExecutionCore wraps results as {"status": "success", "data": <actual_result>}
+    all_empty = True
+    for result in tool_results:
+        wrapped_result = result.get("result", {})
+        status = wrapped_result.get("status", "")
+        # The actual tool output is inside "data" due to ToolExecutionCore wrapping
+        actual_data = wrapped_result.get("data", {})
+
+        # Check for any successful result with actual data
+        if status == "success":
+            # Check if there's actual content (various keys depending on search type)
+            has_data = any([
+                actual_data.get("matches"),
+                actual_data.get("definition"),   # singular for symbols
+                actual_data.get("definitions"),  # plural variant
+                actual_data.get("usages"),
+                actual_data.get("content"),
+                actual_data.get("symbols"),
+                actual_data.get("key_files"),
+                actual_data.get("structure"),    # for modules
+                actual_data.get("related_files"),
+            ])
+            if has_data:
+                all_empty = False
+                break
+
+    if all_empty:
+        # Get the queries that were tried for error message
+        queries_tried = []
+        for r in tool_results:
+            wrapped = r.get("result", {})
+            data = wrapped.get("data", {})
+            query = data.get("query") or data.get("target") or "unknown"
+            queries_tried.append(query)
+        raise CodeAnalysisError(
+            f"search_code returned no results for queries: {queries_tried} - cannot proceed"
+        )
     explored_files = []
 
     for result in tool_results:
-        tool_result = result.get("result", {})
+        wrapped_result = result.get("result", {})
+        # Unwrap ToolExecutionCore wrapper: {"status": ..., "data": <actual_result>}
+        tool_result = wrapped_result.get("data", wrapped_result) if isinstance(wrapped_result, dict) else {}
         # Extract files using convention-based approach
         files = _extract_files_from_result(tool_result)
         explored_files.extend(files)
@@ -1142,5 +1203,6 @@ def get_code_analysis_pipeline() -> PipelineConfig:
 
 __all__ = [
     "CODE_ANALYSIS_PIPELINE",
+    "CodeAnalysisError",
     "get_code_analysis_pipeline",
 ]

@@ -69,13 +69,12 @@ def code_analysis_planner() -> str:
 
 Create search steps using the search_targets above.
 
-Tools:
-- search_code(query): Find files matching query. ALWAYS use this first.
-- read_code(path): Read file content. ONLY use paths from search results.
+Tool:
+- search_code(query): Find code matching query. Returns file:line citations with code snippets.
 
 Rules:
 - Use search_targets DIRECTLY - one search_code call per target
-- NEVER invent paths like "/workspace/foo.py"
+- NEVER invent file paths - search_code finds them for you
 
 Output JSON:
 {{"steps": [{{"tool": "search_code", "parameters": {{"query": "target_from_above"}}, "reasoning": "why"}}], "rationale": "strategy"}}"""
