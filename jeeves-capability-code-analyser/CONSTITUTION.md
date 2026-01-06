@@ -1,7 +1,7 @@
 # Code Analysis Capability Constitution
 
 **Parent:** [docs/CONSTITUTION.md](../docs/CONSTITUTION.md)
-**Updated:** 2025-12-14
+**Updated:** 2026-01-06
 
 ---
 
@@ -28,8 +28,9 @@ This constitution defines the rules for **jeeves-capability-code-analyser**—th
 
 **Capability dependencies:**
 - Depends on `jeeves_protocols` for agent types (AgentConfig, PipelineConfig, GenericEnvelope)
-- Depends on `jeeves_mission_system` for orchestration primitives
-- Depends on `jeeves_avionics.wiring` for ToolExecutor
+- Depends on `jeeves_mission_system.contracts_core` for protocols (ToolExecutorProtocol, LoggerProtocol)
+- Receives infrastructure via **dependency injection** (ToolExecutor injected at bootstrap, not imported)
+- MUST NOT import directly from `jeeves_avionics` (layer violation)
 - MUST NOT import directly from `coreengine/` (Go package)
 
 ---
@@ -70,10 +71,24 @@ This constitution defines the rules for **jeeves-capability-code-analyser**—th
    )
    ```
 
-2. **From jeeves_avionics** (for infrastructure)
-   - `wiring.py`: ToolExecutor, create_llm_provider_factory
-   - `settings.py`: Settings, get_settings
-   - `database/factory.py`: create_database_client
+2. **From jeeves_mission_system** (for infrastructure access)
+   ```python
+   from jeeves_mission_system.contracts_core import (
+       ToolExecutorProtocol,
+       LoggerProtocol,
+       PersistenceProtocol,
+       ContextBounds,
+   )
+   from jeeves_mission_system.adapters import (
+       get_logger,
+       get_settings,
+       get_feature_flags,
+   )
+   ```
+
+   **NOTE:** Concrete implementations (ToolExecutor, LLM providers, database clients)
+   are injected via dependency injection at bootstrap time. The capability layer
+   NEVER imports these directly from jeeves_avionics.
 
 3. **External libraries**
    - Pydantic (for models)
@@ -81,17 +96,30 @@ This constitution defines the rules for **jeeves-capability-code-analyser**—th
 
 **FORBIDDEN imports:**
 ```python
-# ❌ NEVER DO THIS
-from coreengine.agents import Agent           # Go package
-from coreengine.envelope import CoreEnvelope  # Go package
+# ❌ NEVER DO THIS - Go package
+from coreengine.agents import Agent
+from coreengine.envelope import CoreEnvelope
 
-# ✅ ALWAYS DO THIS
+# ❌ NEVER DO THIS - Layer violation (L5 → L2)
+from jeeves_avionics.wiring import ToolExecutor
+from jeeves_avionics.settings import get_settings
+from jeeves_avionics.database.factory import create_database_client
+from jeeves_avionics.tools.catalog import ToolId  # Use capability's own ToolId
+
+# ✅ CORRECT - Import protocols from L0 or L4
 from jeeves_protocols import (
     AgentConfig,
     PipelineConfig,
     GenericEnvelope,
     UnifiedRuntime,
+    ToolExecutorProtocol,  # Interface, not concrete
 )
+
+# ✅ CORRECT - Import from mission_system adapters
+from jeeves_mission_system.adapters import get_logger, get_settings
+
+# ✅ CORRECT - Import from capability's own modules
+from tools.catalog import ToolId  # Capability-owned ToolId
 ```
 
 ### Outputs
@@ -361,7 +389,50 @@ from jeeves_mission_system.config.node_profiles import PROFILES       # Deleted
 - `AgentProfile` — Generic per-agent config types (LLM, thresholds)
 - Operational thresholds (not domain-specific)
 
-### R7: Capability Registration
+### R7: Dependency Injection Pattern
+
+**Capability receives infrastructure via injection, never imports:**
+
+```python
+# orchestration/service.py - CORRECT PATTERN
+class CodeAnalysisService:
+    def __init__(
+        self,
+        *,
+        llm_provider_factory,           # Injected factory
+        tool_executor: ToolExecutorProtocol,  # Injected via protocol
+        logger: LoggerProtocol,         # Injected via protocol
+        persistence: Optional[PersistenceProtocol] = None,
+    ):
+        # Use injected dependencies - no avionics imports
+        self._runtime = create_runtime_from_config(
+            config=CODE_ANALYSIS_PIPELINE,
+            llm_provider_factory=llm_provider_factory,
+            tool_executor=tool_executor,
+            logger=logger,
+        )
+```
+
+**Bootstrap (composition root) creates and injects:**
+
+```python
+# bootstrap.py (in jeeves_mission_system) - COMPOSITION ROOT
+from jeeves_avionics.wiring import ToolExecutor  # Only bootstrap imports avionics
+
+tool_executor = ToolExecutor(registry=tool_registry, logger=logger)
+service = CodeAnalysisService(
+    tool_executor=tool_executor,  # Inject as protocol
+    ...
+)
+```
+
+**Why this matters:**
+- Capability depends on abstractions (protocols), not concretions (implementations)
+- Enables testing with mocks
+- Maintains layer boundaries (L5 never imports L2)
+- Composition root is the ONLY place that wires concrete implementations
+
+### R8: Capability Registration
 
 **Capability MUST register its resources at application startup:**
 
@@ -411,6 +482,8 @@ register_capability()  # MUST be called before infrastructure init
 - Bypass mission_system.contracts
 - Hallucinate code without tool execution
 - Import domain config from mission_system (LanguageConfig, NodeProfiles, etc. are in capability)
+- Import directly from `jeeves_avionics` (use adapters or receive via DI)
+- Import `ToolId` from avionics catalog (use capability's own `tools/catalog.py`)
 
 ---
 

@@ -6,14 +6,16 @@ Only executor agent can execute tools.
 
 Centralized Architecture (v4.0):
 - Agent names use simple form: "perception", "intent", "planner", etc.
-- Imports from contracts_core, not directly from avionics
+- Imports ToolId from capability's own catalog (not contracts_core)
 """
 
 from typing import Dict, List, FrozenSet
 import logging
 
 from jeeves_protocols import ToolAccess
-from jeeves_mission_system.contracts_core import ToolId
+
+# Import ToolId from capability's own catalog (layer-compliant)
+from tools.catalog import ToolId
 
 # Module logger (standard library - no avionics dependency)
 _logger = logging.getLogger(__name__)
